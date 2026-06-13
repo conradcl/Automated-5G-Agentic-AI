@@ -1,0 +1,46 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables / API keys
+.env
+.env.local
+
+# VS Code local settings
+.vscode/
+
+# Logs
+*.log
+logs/
+
+# Runtime outputs
+runs/*
+!runs/.gitkeep
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Test/cache folders
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Large generated data files
+*.pcap
+*.pcapng
+*.csv
+*.jsonl
