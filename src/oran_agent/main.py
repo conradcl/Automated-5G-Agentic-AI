@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from oran_agent.collectors.core import collect_core_status
 from oran_agent.collectors.ue import collect_ue_status
 from oran_agent.collectors.traffic import collect_uplink_ping, collect_downlink_ping
+from oran_agent.llm.deepseek_client import ask_deepseek_about_state
 
 
 def collect_system_state() -> dict:
@@ -35,7 +36,17 @@ def collect_system_state() -> dict:
 
 def main() -> None:
     state = collect_system_state()
+
+    print("=== Raw System State JSON ===")
     print(json.dumps(state, indent=2))
+
+    answer = ask_deepseek_about_state(
+        state,
+        "Is the 5G/O-RAN testbed healthy right now?"
+    )
+
+    print("\n=== DeepSeek Answer ===")
+    print(answer)
 
 
 if __name__ == "__main__":
