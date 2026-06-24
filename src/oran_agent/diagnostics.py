@@ -24,6 +24,7 @@ def build_diagnostics(state: Dict[str, Any]) -> Dict[str, Any]:
     core = state.get("core", {})
     ue = state.get("ue", {})
     traffic = state.get("traffic", {})
+    kpm = state.get("kpm", {})
 
     # Core diagnosis
     if core.get("ok") is True:
@@ -157,6 +158,55 @@ def build_diagnostics(state: Dict[str, Any]) -> Dict[str, Any]:
 
     critical_count = sum(1 for finding in findings if finding["severity"] == "critical")
     warning_count = sum(1 for finding in findings if finding["severity"] == "warning")
+
+        # KPM diagnosis
+    if kpm.get("ok") is True:
+        metrics = kpm.get("metrics", {})
+
+        important_metrics = []
+
+        for metric_name in [
+            "DRB.UEThpDl",
+            "DRB.UEThpUl",
+            "DRB.RlcSduDelayDl",
+            "RRU.PrbTotDl",
+            "RRU.PrbTotUl",
+            "DRB.PdcpSduVolumeDL",
+            "DRB.PdcpSduVolumeUL"
+        ]:
+            if metric_name in metrics:
+                metric = metrics[metric_name]
+                important_metrics.append(
+                    metric_name
+                    + "="
+                    + str(metric.get("value"))
+                    + " "
+                    + str(metric.get("unit"))
+                )
+
+        evidence = "Parsed " + str(kpm.get("metric_count")) + " KPM metrics."
+
+        if important_metrics:
+            evidence += " Important metrics: " + ", ".join(important_metrics)
+
+        add_finding(
+            findings,
+            "KPM Metrics",
+            "available",
+            "info",
+            evidence,
+            "Use KPM metrics to evaluate throughput, PRB usage, and delay."
+        )
+
+    else:
+        add_finding(
+            findings,
+            "KPM Metrics",
+            "not available",
+            "warning",
+            kpm.get("error", "No KPM metrics were parsed."),
+            "Run KPIMON and save output to logs/kpm_latest.log, then rerun the agent."
+        )
 
     if state.get("overall_health") is True:
         status_label = "healthy"

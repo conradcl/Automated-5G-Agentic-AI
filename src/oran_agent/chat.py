@@ -82,7 +82,7 @@ def main() -> None:
             break
 
         if question.lower() == "/help":
-             print_help()
+            print_help()
             continue
 
         print("\n[1/3] Collecting live testbed state...")

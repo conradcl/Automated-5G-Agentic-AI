@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from oran_agent.collectors.core import collect_core_status
 from oran_agent.collectors.ue import collect_ue_status
 from oran_agent.collectors.traffic import collect_uplink_ping, collect_downlink_ping
+from oran_agent.collectors.kpm import collect_kpm_metrics
 from oran_agent.llm.deepseek_client import ask_deepseek_about_state
 from oran_agent.diagnostics import build_diagnostics
 
@@ -11,12 +12,14 @@ from oran_agent.diagnostics import build_diagnostics
 def collect_system_state() -> dict:
     core = collect_core_status()
     ue = collect_ue_status()
+    kpm = collect_kpm_metrics()
 
     state = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "core": core,
         "ue": ue,
-        "traffic": {}
+        "traffic": {},
+        "kpm": kpm
     }
 
     if ue["ok"] and ue["ue_ip"]:
