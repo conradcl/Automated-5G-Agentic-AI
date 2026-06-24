@@ -6,6 +6,19 @@ from typing import Any, Dict
 from oran_agent.main import collect_system_state
 from oran_agent.llm.deepseek_client import ask_deepseek_about_state
 
+def print_help() -> None:
+    print("\nAvailable commands:")
+    print("  /help          Show this help menu")
+    print("  /state         Print raw live system-state JSON")
+    print("  /diagnostics   Print deterministic diagnostics JSON")
+    print("  exit           Quit the terminal agent")
+    print()
+    print("Example questions:")
+    print("  Is the testbed healthy right now?")
+    print("  Is the UE connected?")
+    print("  Are uplink and downlink traffic working?")
+    print("  What evidence supports your answer?")
+    print("  If the system is unhealthy, what should I check first?")
 
 def save_chat_turn(
     log_path: Path,
@@ -32,15 +45,10 @@ def print_intro(log_path: Path) -> None:
     print("=" * 70)
     print("Ask questions about the live OAI/FlexRIC 5G/O-RAN testbed.")
     print()
-    print("Examples:")
-    print("  Is the testbed healthy right now?")
-    print("  Is the UE connected?")
-    print("  Are uplink and downlink traffic working?")
-    print("  Why is the system unhealthy?")
-    print()
     print("Commands:")
     print("  /state  - print raw live system-state JSON")
     print("  /help   - show this help message")
+    print("  /diagnostics   Print deterministic diagnostics JSON")
     print("  exit    - quit")
     print()
     print(f"Session log: {log_path}")
@@ -74,7 +82,7 @@ def main() -> None:
             break
 
         if question.lower() == "/help":
-            print_intro(log_path)
+             print_help()
             continue
 
         print("\n[1/3] Collecting live testbed state...")
