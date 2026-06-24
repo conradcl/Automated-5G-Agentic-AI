@@ -5,6 +5,7 @@ from oran_agent.collectors.core import collect_core_status
 from oran_agent.collectors.ue import collect_ue_status
 from oran_agent.collectors.traffic import collect_uplink_ping, collect_downlink_ping
 from oran_agent.llm.deepseek_client import ask_deepseek_about_state
+from oran_agent.diagnostics import build_diagnostics
 
 
 def collect_system_state() -> dict:
@@ -30,6 +31,8 @@ def collect_system_state() -> dict:
         and state["traffic"].get("uplink_ping", {}).get("ok") is True
         and state["traffic"].get("downlink_ping", {}).get("ok") is True
     )
+
+    state["diagnostics"] = build_diagnostics(state)
 
     return state
 

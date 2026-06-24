@@ -91,7 +91,23 @@ def main() -> None:
             )
             continue
 
-        print(f"[2/3] Current overall_health = {state.get('overall_health')}")
+        if question.lower() == "/diagnostics":
+            print("\n=== Deterministic Diagnostics ===")
+            print(json.dumps(state.get("diagnostics", {}), indent=2))
+            save_chat_turn(
+                log_path,
+                question,
+                "User requested deterministic diagnostics.",
+                state
+            )
+            continue
+
+
+        diagnostics = state.get("diagnostics", {})
+        print(
+            f"[2/3] Status = {diagnostics.get('status_label')} | "
+            f"overall_health = {state.get('overall_health')}"
+        )
         print("[3/3] Sending structured state to DeepSeek...")
 
         answer = ask_deepseek_about_state(state, question)
