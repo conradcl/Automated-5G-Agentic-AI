@@ -5,12 +5,14 @@ from typing import Any, Dict
 
 from oran_agent.main import collect_system_state
 from oran_agent.llm.deepseek_client import ask_deepseek_about_state
+from oran_agent.collectors.kpm import run_kpm_xapp_once
 
 def print_help() -> None:
     print("\nAvailable commands:")
     print("  /help          Show this help menu")
     print("  /state         Print raw live system-state JSON")
     print("  /diagnostics   Print deterministic diagnostics JSON")
+    print("  /kpm           Run KPIMON xApp and parse KPM metrics")
     print("  exit           Quit the terminal agent")
     print()
     print("Example questions:")
@@ -46,9 +48,10 @@ def print_intro(log_path: Path) -> None:
     print("Ask questions about the live OAI/FlexRIC 5G/O-RAN testbed.")
     print()
     print("Commands:")
+    print("  /help   - show the help message")
     print("  /state  - print raw live system-state JSON")
-    print("  /help   - show this help message")
     print("  /diagnostics   Print deterministic diagnostics JSON")
+    print("  /kpm           Run KPIMON xApp and parse KPM metrics")
     print("  exit    - quit")
     print()
     print(f"Session log: {log_path}")
@@ -83,6 +86,17 @@ def main() -> None:
 
         if question.lower() == "/help":
             print_help()
+            continue
+
+        if question.lower() == "/kpm":
+            print("\nRunning KPIMON xApp and parsing KPM metrics...")
+            print("Make sure nearRT-RIC, gNB, and UE are already running.")
+
+            kpm_result = run_kpm_xapp_once(timeout=25)
+
+            print("\n=== KPM Result ===")
+            print(json.dumps(kpm_result, indent=2))
+
             continue
 
         print("\n[1/3] Collecting live testbed state...")
