@@ -1,0 +1,8 @@
+{
+  "component": "oran-health-observation-xapp",
+  "evidence_source": "E2SM-KPM via FlexRIC xApp",
+  "e2_nodes_connected": 1,
+  "kpm_indications_received": 10,
+  "last_kpm_latency_us": 1783317596395966,
+  "raw_evidence_path": "runs/latest_e2_observation.log"
+}

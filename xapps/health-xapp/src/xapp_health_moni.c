@@ -32,9 +32,91 @@
 #include <signal.h>
 #include <pthread.h>
 
+#include <stdarg.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <string.h>
+
 static uint64_t const period_ms = 1000;
 
 static pthread_mutex_t mtx;
+
+#define E2_EVIDENCE_PATH "runs/latest_e2_observation.log"
+#define E2_SUMMARY_PATH "runs/latest_e2_summary.json"
+
+typedef struct
+{
+  int e2_nodes_connected;
+  int kpm_indications_received;
+  long long last_kpm_latency_us;
+} observation_state_t;
+
+static observation_state_t observation = {0};
+
+static void ensure_runs_dir(void)
+{
+  if (mkdir("runs", 0755) != 0 && errno != EEXIST)
+  {
+    perror("Could not create runs directory");
+  }
+}
+
+static void append_e2_observation(const char *format, ...)
+{
+  ensure_runs_dir();
+
+  FILE *fp = fopen(E2_EVIDENCE_PATH, "a");
+  if (fp == NULL)
+  {
+    perror("Could not open E2 evidence file");
+    return;
+  }
+
+  time_t now = time(NULL);
+  struct tm tm_now;
+  gmtime_r(&now, &tm_now);
+
+  char timestamp[32];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &tm_now);
+
+  fprintf(fp, "[%s] ", timestamp);
+
+  va_list args;
+  va_start(args, format);
+  vfprintf(fp, format, args);
+  va_end(args);
+
+  fprintf(fp, "\n");
+  fclose(fp);
+}
+
+static void write_e2_summary(void)
+{
+  ensure_runs_dir();
+
+  FILE *fp = fopen(E2_SUMMARY_PATH, "w");
+  if (fp == NULL)
+  {
+    perror("Could not write E2 summary file");
+    return;
+  }
+
+  fprintf(fp,
+          "{\n"
+          "  \"component\": \"oran-health-observation-xapp\",\n"
+          "  \"evidence_source\": \"E2SM-KPM via FlexRIC xApp\",\n"
+          "  \"e2_nodes_connected\": %d,\n"
+          "  \"kpm_indications_received\": %d,\n"
+          "  \"last_kpm_latency_us\": %lld,\n"
+          "  \"raw_evidence_path\": \"%s\"\n"
+          "}\n",
+          observation.e2_nodes_connected,
+          observation.kpm_indications_received,
+          observation.last_kpm_latency_us,
+          E2_EVIDENCE_PATH);
+
+  fclose(fp);
+}
 
 static void log_gnb_ue_id(ue_id_e2sm_t ue_id)
 {
@@ -90,18 +172,22 @@ static void log_int_value(byte_array_t name, meas_record_lst_t meas_record)
   if (cmp_str_ba("RRU.PrbTotDl", name) == 0)
   {
     printf("RRU.PrbTotDl = %d [PRBs]\n", meas_record.int_val);
+    append_e2_observation("KPM metric: RRU.PrbTotDl = %d [PRBs]", meas_record.int_val);
   }
   else if (cmp_str_ba("RRU.PrbTotUl", name) == 0)
   {
     printf("RRU.PrbTotUl = %d [PRBs]\n", meas_record.int_val);
+    append_e2_observation("KPM metric: RRU.PrbTotUl = %d [PRBs]", meas_record.int_val);
   }
   else if (cmp_str_ba("DRB.PdcpSduVolumeDL", name) == 0)
   {
     printf("DRB.PdcpSduVolumeDL = %d [kb]\n", meas_record.int_val);
+    append_e2_observation("KPM metric: DRB.PdcpSduVolumeDL = %d [kb]", meas_record.int_val);
   }
   else if (cmp_str_ba("DRB.PdcpSduVolumeUL", name) == 0)
   {
     printf("DRB.PdcpSduVolumeUL = %d [kb]\n", meas_record.int_val);
+    append_e2_observation("KPM metric: DRB.PdcpSduVolumeUL = %d [kb]", meas_record.int_val);
   }
   else
   {
@@ -114,14 +200,17 @@ static void log_real_value(byte_array_t name, meas_record_lst_t meas_record)
   if (cmp_str_ba("DRB.RlcSduDelayDl", name) == 0)
   {
     printf("DRB.RlcSduDelayDl = %.2f [μs]\n", meas_record.real_val);
+    append_e2_observation("KPM metric: DRB.RlcSduDelayDl = %.2f [us]", meas_record.real_val);
   }
   else if (cmp_str_ba("DRB.UEThpDl", name) == 0)
   {
     printf("DRB.UEThpDl = %.2f [kbps]\n", meas_record.real_val);
+    append_e2_observation("KPM metric: DRB.UEThpDl = %.2f [kbps]", meas_record.real_val);
   }
   else if (cmp_str_ba("DRB.UEThpUl", name) == 0)
   {
     printf("DRB.UEThpUl = %.2f [kbps]\n", meas_record.real_val);
+    append_e2_observation("KPM metric: DRB.UEThpUl = %.2f [kbps]", meas_record.real_val);
   }
   else
   {
@@ -195,7 +284,17 @@ static void sm_cb_kpm(sm_ag_if_rd_t const *rd)
   {
     lock_guard(&mtx);
 
-    printf("\n%7d KPM ind_msg latency = %ld [μs]\n", counter, now - hdr_frm_1->collectStartTime); // xApp <-> E2 Node
+    long long latency_us = (long long)(now - hdr_frm_1->collectStartTime);
+
+    observation.kpm_indications_received++;
+    observation.last_kpm_latency_us = latency_us;
+
+    printf("\n%7d KPM ind_msg latency = %lld [us]\n", counter, latency_us);
+
+    append_e2_observation(
+        "KPM indication received: counter=%d latency_us=%lld",
+        counter,
+        latency_us);
 
     // Reported list of measurements per UE
     for (size_t i = 0; i < msg_frm_3->ue_meas_report_lst_len; i++)
@@ -388,6 +487,9 @@ int main(int argc, char *argv[])
 
   printf("Connected E2 nodes = %d\n", nodes.len);
 
+  observation.e2_nodes_connected = nodes.len;
+  append_e2_observation("xApp connected to Near-RT RIC: e2_nodes_connected=%d", nodes.len);
+
   pthread_mutexattr_t attr = {0};
   int rc = pthread_mutex_init(&mtx, &attr);
   assert(rc == 0);
@@ -436,6 +538,9 @@ int main(int argc, char *argv[])
   // Stop the xApp
   while (try_stop_xapp_api() == false)
     usleep(1000);
+
+  write_e2_summary();
+  append_e2_observation("xApp finished collecting E2/KPM evidence");
 
   printf("Test xApp run SUCCESSFULLY\n");
 }
