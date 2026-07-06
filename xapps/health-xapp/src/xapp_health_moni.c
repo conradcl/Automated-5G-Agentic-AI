@@ -48,7 +48,10 @@ typedef struct
 {
   int e2_nodes_connected;
   int kpm_indications_received;
+  long long last_xapp_receive_time_us;
+  long long last_kpm_collect_start_time;
   long long last_kpm_latency_us;
+  int latency_available;
 } observation_state_t;
 
 static observation_state_t observation = {0};
@@ -107,15 +110,19 @@ static void write_e2_summary(void)
           "  \"evidence_source\": \"E2SM-KPM via FlexRIC xApp\",\n"
           "  \"e2_nodes_connected\": %d,\n"
           "  \"kpm_indications_received\": %d,\n"
+          "  \"last_xapp_receive_time_us\": %lld,\n"
+          "  \"last_kpm_collect_start_time\": %lld,\n"
+          "  \"latency_available\": %s,\n"
           "  \"last_kpm_latency_us\": %lld,\n"
           "  \"raw_evidence_path\": \"%s\"\n"
           "}\n",
           observation.e2_nodes_connected,
           observation.kpm_indications_received,
+          observation.last_xapp_receive_time_us,
+          observation.last_kpm_collect_start_time,
+          observation.latency_available ? "true" : "false",
           observation.last_kpm_latency_us,
           E2_EVIDENCE_PATH);
-
-  fclose(fp);
 }
 
 static void log_gnb_ue_id(ue_id_e2sm_t ue_id)
@@ -274,39 +281,62 @@ static void sm_cb_kpm(sm_ag_if_rd_t const *rd)
   assert(rd->type == INDICATION_MSG_AGENT_IF_ANS_V0);
   assert(rd->ind.type == KPM_STATS_V3_0);
 
-  // Reading Indication Message Format 3
   kpm_ind_data_t const *ind = &rd->ind.kpm.ind;
   kpm_ric_ind_hdr_format_1_t const *hdr_frm_1 = &ind->hdr.kpm_ric_ind_hdr_format_1;
   kpm_ind_msg_format_3_t const *msg_frm_3 = &ind->msg.frm_3;
 
   int64_t const now = time_now_us();
   static int counter = 1;
+
   {
     lock_guard(&mtx);
 
-    long long latency_us = (long long)(now - hdr_frm_1->collectStartTime);
+    long long receive_time_us = (long long)now;
+    long long collect_start_time = (long long)hdr_frm_1->collectStartTime;
+    long long latency_us = -1;
 
     observation.kpm_indications_received++;
-    observation.last_kpm_latency_us = latency_us;
+    observation.last_xapp_receive_time_us = receive_time_us;
+    observation.last_kpm_collect_start_time = collect_start_time;
 
-    printf("\n%7d KPM ind_msg latency = %lld [us]\n", counter, latency_us);
+    if (collect_start_time > 0 && collect_start_time <= receive_time_us)
+    {
+      latency_us = receive_time_us - collect_start_time;
+      observation.last_kpm_latency_us = latency_us;
+      observation.latency_available = 1;
 
-    append_e2_observation(
-        "KPM indication received: counter=%d latency_us=%lld",
-        counter,
-        latency_us);
+      printf("\n%7d KPM ind_msg latency = %lld [us]\n", counter, latency_us);
 
-    // Reported list of measurements per UE
+      append_e2_observation(
+          "KPM indication received: counter=%d latency_us=%lld receive_time_us=%lld collect_start_time=%lld",
+          counter,
+          latency_us,
+          receive_time_us,
+          collect_start_time);
+    }
+    else
+    {
+      observation.last_kpm_latency_us = -1;
+      observation.latency_available = 0;
+
+      printf("\n%7d KPM indication received; latency unavailable\n", counter);
+
+      append_e2_observation(
+          "KPM indication received: counter=%d latency_unavailable receive_time_us=%lld collect_start_time=%lld",
+          counter,
+          receive_time_us,
+          collect_start_time);
+    }
+
     for (size_t i = 0; i < msg_frm_3->ue_meas_report_lst_len; i++)
     {
-      // log UE ID
       ue_id_e2sm_t const ue_id_e2sm = msg_frm_3->meas_report_per_ue[i].ue_meas_report_lst;
       ue_id_e2sm_e const type = ue_id_e2sm.type;
       log_ue_id_e2sm[type](ue_id_e2sm);
 
-      // log measurements
       log_kpm_measurements(&msg_frm_3->meas_report_per_ue[i].ind_msg_format_1);
     }
+
     counter++;
   }
 }
@@ -472,9 +502,25 @@ static size_t find_sm_idx(sm_ran_function_t *rf, size_t sz, bool (*f)(sm_ran_fun
   assert(0 != 0 && "SM ID could not be found in the RAN Function List");
 }
 
+static void reset_e2_observation_file(void)
+{
+  ensure_runs_dir();
+
+  FILE *fp = fopen(E2_EVIDENCE_PATH, "w");
+  if (fp == NULL)
+  {
+    perror("Could not reset E2 evidence file");
+    return;
+  }
+
+  fclose(fp);
+}
+
 int main(int argc, char *argv[])
 {
   fr_args_t args = init_fr_args(argc, argv);
+
+  reset_e2_observation_file();
 
   // Init the xApp
   init_xapp_api(&args);
