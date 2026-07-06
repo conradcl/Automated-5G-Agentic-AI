@@ -123,6 +123,7 @@ static void write_e2_summary(void)
           observation.latency_available ? "true" : "false",
           observation.last_kpm_latency_us,
           E2_EVIDENCE_PATH);
+  fclose(fp);
 }
 
 static void log_gnb_ue_id(ue_id_e2sm_t ue_id)
@@ -292,27 +293,38 @@ static void sm_cb_kpm(sm_ag_if_rd_t const *rd)
     lock_guard(&mtx);
 
     long long receive_time_us = (long long)now;
-    long long collect_start_time = (long long)hdr_frm_1->collectStartTime;
+    long long collect_start_time_raw = (long long)hdr_frm_1->collectStartTime;
+    long long collect_start_time_us = -1;
     long long latency_us = -1;
+
+    if (collect_start_time_raw > 0 && collect_start_time_raw < 1000000000000LL)
+    {
+      collect_start_time_us = collect_start_time_raw * 1000000LL;
+    }
+    else
+    {
+      collect_start_time_us = collect_start_time_raw;
+    }
 
     observation.kpm_indications_received++;
     observation.last_xapp_receive_time_us = receive_time_us;
-    observation.last_kpm_collect_start_time = collect_start_time;
+    observation.last_kpm_collect_start_time = collect_start_time_raw;
 
-    if (collect_start_time > 0 && collect_start_time <= receive_time_us)
+    if (collect_start_time_us > 0 && collect_start_time_us <= receive_time_us)
     {
-      latency_us = receive_time_us - collect_start_time;
+      latency_us = receive_time_us - collect_start_time_us;
       observation.last_kpm_latency_us = latency_us;
       observation.latency_available = 1;
 
       printf("\n%7d KPM ind_msg latency = %lld [us]\n", counter, latency_us);
 
       append_e2_observation(
-          "KPM indication received: counter=%d latency_us=%lld receive_time_us=%lld collect_start_time=%lld",
-          counter,
-          latency_us,
-          receive_time_us,
-          collect_start_time);
+        "KPM indication received: counter=%d latency_us=%lld receive_time_us=%lld collect_start_time_raw=%lld collect_start_time_us=%lld",
+        counter,
+        latency_us,
+        receive_time_us,
+        collect_start_time_raw,
+        collect_start_time_us);
     }
     else
     {
@@ -322,10 +334,11 @@ static void sm_cb_kpm(sm_ag_if_rd_t const *rd)
       printf("\n%7d KPM indication received; latency unavailable\n", counter);
 
       append_e2_observation(
-          "KPM indication received: counter=%d latency_unavailable receive_time_us=%lld collect_start_time=%lld",
-          counter,
-          receive_time_us,
-          collect_start_time);
+        "KPM indication received: counter=%d latency_unavailable receive_time_us=%lld collect_start_time_raw=%lld collect_start_time_us=%lld",
+        counter,
+        receive_time_us,
+        collect_start_time_raw,
+        collect_start_time_us);
     }
 
     for (size_t i = 0; i < msg_frm_3->ue_meas_report_lst_len; i++)
