@@ -118,3 +118,59 @@ Fault Injection Tests:
 - UPF failure: docker stop oai-upf
 - AMF failure: docker stop oai-amf
 - gNB/UE process failure: Ctrl+C corresponding process
+
+## Agentic Core (LangGraph Orchestration Layer)
+
+The `agentic_core/` directory contains the agent architecture, built on LangGraph. Instead of calling an LLM directly for each user question, `agentic_core/` introduces a graph-based orchestration layer intended to support multi-step reasoning, tool use, and persistent state across turns, serving as the foundation for Dual-Brain architecture.
+
+Note: `agentic_core/` uses its own `requirements.txt` and virtual environment, separate from `legacy/python-chatbot/`.
+
+### Current Status
+
+- LangGraph is installed and confirmed working end-to-end: a single-node graph (`brain1`) builds, compiles, and executes correctly against a local LLM served via  Ollama.
+- Currently running `llama3.2:3b` for development/testing purposes.
+- A Postgres-backed checkpointer (`config/db.py`) has been written to persist graph state across turns and sessions, but is not yet wired into the active graph or tested against a running Postgres instance.
+- No tool nodes are implemented yet. Brain 1 currently has no access to live testbed data — wiring the existing `diagnostics.py` / `collectors/kpm.py` logic (or the xApp's E2 summary output) in as LangGraph tools is the next planned step.
+- Brain 2 (ONNX classifiers) and the PAOR (Perceive–Act–Observe–Reflect) loop structure have not been started.
+
+### Setup
+
+Requires Python 3.10+. On Ubuntu 20.04 (focal), the deadsnakes PPA no longer supports focal following its April 2025 EOL, so Python is installed via [`uv`](https://github.com/astral-sh/uv) instead of apt:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+uv python install 3.11
+```
+
+Create the virtual environment and install dependencies:
+
+```bash
+cd agentic_core
+uv venv --python 3.11 .venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+Copy `.env.example` to `.env` and fill in real values:
+
+```bash
+cp .env.example .env
+```
+
+Ollama must be installed and running locally (or reachable over LAN) with the target model pulled:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull llama3.2:3b
+```
+
+### Running the Smoke Test
+
+```bash
+cd agentic_core
+source .venv/bin/activate
+python run_test.py
+```
+
+This builds the graph, prints its structure as a Mermaid diagram, sends a test message through Brain 1, and prints the model's response.

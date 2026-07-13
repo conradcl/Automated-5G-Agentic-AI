@@ -1,9 +1,13 @@
 import os
+from dotenv import load_dotenv
 from langgraph.checkpoint.postgres import PostgresSaver
 
-DB_URI = os.getenv("POSTGRES_URI", "postgresql://user:pass@localhost:5432/agentic_ai")
+load_dotenv()
 
 def get_checkpointer():
-    with PostgresSaver.from_conn_string(DB_URI) as saver:
-        saver.setup()  # creates tables on first run
+    db_uri = os.getenv("POSTGRES_URI")
+    if not db_uri:
+        raise ValueError("POSTGRES_URI not set in environment")
+    with PostgresSaver.from_conn_string(db_uri) as saver:
+        saver.setup()
         return saver
