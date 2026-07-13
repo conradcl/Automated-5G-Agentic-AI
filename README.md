@@ -129,8 +129,8 @@ Note: `agentic_core/` uses its own `requirements.txt` and virtual environment, s
 
 - LangGraph is installed and confirmed working end-to-end: a single-node graph (`brain1`) builds, compiles, and executes correctly against a local LLM served via  Ollama.
 - Currently running `llama3.2:3b` for development/testing purposes.
-- A Postgres-backed checkpointer (`config/db.py`) has been written to persist graph state across turns and sessions, but is not yet wired into the active graph or tested against a running Postgres instance.
-- No tool nodes are implemented yet. Brain 1 currently has no access to live testbed data — wiring the existing `diagnostics.py` / `collectors/kpm.py` logic (or the xApp's E2 summary output) in as LangGraph tools is the next planned step.
+- Postgres-backed checkpointer is wired in and confirmed working: Postgres runs via `docker-compose.yml` in `agentic_core/`, and graph state persists correctly across separate invocations sharing the same `thread_id` (verified via a two-turn smoke test where the agent correctly recalled information from a prior turn).
+- No tool nodes are implemented yet. Brain 1 currently has no access to live testbed data.
 - Brain 2 (ONNX classifiers) and the PAOR (Perceive–Act–Observe–Reflect) loop structure have not been started.
 
 ### Setup
@@ -164,6 +164,12 @@ Ollama must be installed and running locally (or reachable over LAN) with the ta
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull llama3.2:3b
 ```
+
+Bring up Postgres (used by the LangGraph checkpointer for persistent state):
+
+\`\`\`bash
+docker compose up -d
+\`\`\`
 
 ### Running the Smoke Test
 
