@@ -17,8 +17,8 @@ env/
 .vscode/
 
 # Logs
-*.log
-logs/
+logs/*
+!logs/.gitkeep
 
 # Runtime outputs
 runs/*
@@ -29,7 +29,7 @@ runs/*
 *.swp
 *.swo
 
-# OS junk
+# OS stuff
 .DS_Store
 Thumbs.db
 

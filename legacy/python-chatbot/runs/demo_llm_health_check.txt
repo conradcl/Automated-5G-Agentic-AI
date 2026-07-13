@@ -1,0 +1,101 @@
+=== Raw System State JSON ===
+{
+  "timestamp": "2026-06-15T03:51:54.682988+00:00",
+  "core": {
+    "ok": true,
+    "missing": [],
+    "unhealthy": [],
+    "containers": {
+      "oai-upf": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-smf": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-amf": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-ausf": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-udm": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-udr": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "ims": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-ext-dn": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "mysql": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      },
+      "oai-nrf": {
+        "status": "Up 11 minutes (healthy)",
+        "running": true,
+        "healthy": true
+      }
+    }
+  },
+  "ue": {
+    "ok": true,
+    "interface_exists": true,
+    "ue_ip": "10.0.0.2"
+  },
+  "traffic": {
+    "uplink_ping": {
+      "ok": true,
+      "direction": "ue_to_ext_dn",
+      "parsed": {
+        "packet_loss_percent": 0.0,
+        "avg_rtt_ms": 18.041,
+        "ok": true
+      },
+      "raw_output": "PING 192.168.70.135 (192.168.70.135) from 10.0.0.2 oaitun_ue1: 56(84) bytes of data.\n64 bytes from 192.168.70.135: icmp_seq=1 ttl=63 time=18.1 ms\n64 bytes from 192.168.70.135: icmp_seq=2 ttl=63 time=17.7 ms\n64 bytes from 192.168.70.135: icmp_seq=3 ttl=63 time=17.4 ms\n64 bytes from 192.168.70.135: icmp_seq=4 ttl=63 time=17.7 ms\n64 bytes from 192.168.70.135: icmp_seq=5 ttl=63 time=19.3 ms\n\n--- 192.168.70.135 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 4007ms\nrtt min/avg/max/mdev = 17.404/18.041/19.328/0.685 ms",
+      "error": ""
+    },
+    "downlink_ping": {
+      "ok": true,
+      "direction": "ext_dn_to_ue",
+      "parsed": {
+        "packet_loss_percent": 0.0,
+        "avg_rtt_ms": 25.221,
+        "ok": true
+      },
+      "raw_output": "PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.\n64 bytes from 10.0.0.2: icmp_seq=1 ttl=63 time=15.1 ms\n64 bytes from 10.0.0.2: icmp_seq=2 ttl=63 time=13.4 ms\n64 bytes from 10.0.0.2: icmp_seq=3 ttl=63 time=17.0 ms\n64 bytes from 10.0.0.2: icmp_seq=4 ttl=63 time=13.4 ms\n64 bytes from 10.0.0.2: icmp_seq=5 ttl=63 time=67.2 ms\n\n--- 10.0.0.2 ping statistics ---\n5 packets transmitted, 5 received, 0% packet loss, time 3999ms\nrtt min/avg/max/mdev = 13.399/25.221/67.207/21.035 ms",
+      "error": ""
+    }
+  },
+  "overall_health": true
+}
+
+=== DeepSeek Answer ===
+Yes, the 5G/O-RAN testbed is healthy. Here’s the evidence:
+
+- **All core network containers** (AMF, SMF, UPF, AUSF, UDM, UDR, NRF, MySQL, IMS, ext‑DN) are **Up and healthy**.
+- **UE** interface is present with IP `10.0.0.2`.
+- **Uplink ping** (UE → ext‑DN): **0% packet loss**, avg RTT 18 ms.
+- **Downlink ping** (ext‑DN → UE): **0% packet loss**, avg RTT 25 ms.
+
+No missing or unhealthy components were detected, and the overall health flag is `true`. The network is functional and delivering data correctly.
