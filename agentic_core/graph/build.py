@@ -4,6 +4,7 @@ from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_ollama import ChatOllama
+from langchain_deepseek import ChatDeepSeek
 
 load_dotenv()
 
@@ -11,6 +12,16 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 def get_llm():
+    provider = os.getenv("LLM_PROVIDER", "ollama")
+
+    if provider == "deepseek":
+        print(f">>> Using DeepSeek: {os.getenv('DEEPSEEK_MODEL', 'deepseek-v4-flash')}")
+        return ChatDeepSeek(
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+        )
+
+    print(f">>> Using Ollama: {os.getenv('LLM_MODEL', 'llama3.2:3b')}")
     return ChatOllama(
         model=os.getenv("LLM_MODEL", "llama3.2:3b"),
         base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434"),
