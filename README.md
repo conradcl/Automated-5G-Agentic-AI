@@ -3,6 +3,20 @@ Agentic AI for a live 5G/O-RAN testbed that can monitor system health, run traff
 
 The agent collects live system state from the testbed, converts the results into structured JSON, generates deterministic diagnostics, and sends the structured evidence to an LLM for a human-readable explanation.
 
+## Current Read-only rApp Data Path
+
+The first networked MVP uses this live path:
+
+```text
+E2 node -> E2SM-KPM -> Health xApp -> Evidence API
+        -> R1/DME Information Job -> Health Agent rApp -> LangGraph checks
+```
+
+The Health xApp now publishes from memory over HTTP on a dedicated thread; no
+xApp evidence file is used by the Evidence API or rApp. See
+`xapps/health-xapp/README.md`, `services/evidence-api/README.md`, and
+`rapps/agentic-rapp/README.md` for VM build and startup instructions.
+
 ## Current Testbed
 
 The current development environment uses:

@@ -1,0 +1,7 @@
+Flask>=3.0,<4
+langgraph>=0.2,<2
+requests>=2.31,<3
+Werkzeug>=3.0,<4
+
+# Test dependency
+pytest>=8.0,<9
