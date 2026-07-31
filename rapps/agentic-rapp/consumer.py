@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 from datetime import datetime, timezone
 from typing import Optional, TypedDict
@@ -114,6 +115,10 @@ def reset_state() -> None:
 
 
 def run_receiver() -> None:
+    # Keep receiver errors visible without flooding the interactive rApp prompt
+    # with one Werkzeug access-log line per telemetry delivery.
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
     receiver_app.run(
         host=config.CONSUMER_BIND_HOST,
         port=config.CONSUMER_PORT,
