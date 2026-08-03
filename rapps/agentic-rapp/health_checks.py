@@ -22,6 +22,7 @@ class HealthCheck(TypedDict):
 
 
 class HealthReport(TypedDict):
+    assessment_scope: str
     overall_status: str
     generated_at: str
     source_observed_at: Optional[str]
@@ -53,6 +54,7 @@ def evaluate_health(
     telemetry = snapshot.get("telemetry")
     if not snapshot.get("received") or not isinstance(telemetry, dict):
         return HealthReport(
+            assessment_scope=config.ASSESSMENT_SCOPE,
             overall_status="unknown",
             generated_at=isoformat_utc(now),
             source_observed_at=None,
@@ -239,6 +241,7 @@ def evaluate_health(
         overall = "healthy"
 
     return HealthReport(
+        assessment_scope=config.ASSESSMENT_SCOPE,
         overall_status=overall,
         generated_at=isoformat_utc(now),
         source_observed_at=telemetry.get("observed_at"),

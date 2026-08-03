@@ -33,6 +33,11 @@ DME_BASE_URL = os.environ.get("DME_BASE_URL", f"http://127.0.0.1:{DME_PORT}")
 INFO_TYPE_ID = os.environ.get("INFO_TYPE_ID", "oran-health-monitor-kpm-v1")
 HTTP_TIMEOUT_S = _env_float("HTTP_TIMEOUT_S", 5.0)
 
+# The deterministic evaluator covers this monitoring path, not whole-testbed
+# or subscriber-service health.
+ASSESSMENT_SCOPE = "ric_e2_kpm_telemetry_monitoring_path"
+ASSESSMENT_SCOPE_LABEL = "RIC/E2 KPM telemetry monitoring path"
+
 # Read-only health rApp consumer
 JOB_ID = os.environ.get("JOB_ID", "health-agent-rapp-job-1")
 JOB_OWNER = os.environ.get("JOB_OWNER", "health-agent-rapp")
@@ -62,3 +67,14 @@ REQUIRED_KPM_METRICS = _env_csv(
         "DRB.RlcSduDelayDl",
     ),
 )
+
+# Optional DeepSeek explanation layer. The model receives structured evidence,
+# never the deterministic HealthReport produced by health_checks.py.
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEEPSEEK_TEMPERATURE = _env_float("DEEPSEEK_TEMPERATURE", 0.1)
+DEEPSEEK_TIMEOUT_S = _env_float("DEEPSEEK_TIMEOUT_S", 20.0)
+DEEPSEEK_MAX_TOKENS = _env_int("DEEPSEEK_MAX_TOKENS", 600)
+DEEPSEEK_MAX_QUESTION_CHARS = _env_int("DEEPSEEK_MAX_QUESTION_CHARS", 2000)
+DEEPSEEK_MAX_INPUT_CHARS = _env_int("DEEPSEEK_MAX_INPUT_CHARS", 50000)

@@ -6,7 +6,7 @@ import time
 
 import config
 import consumer
-from graph import ask
+from graph import DEFAULT_QUERY, ask
 
 
 def main() -> None:
@@ -26,7 +26,7 @@ def main() -> None:
         ) from exc
 
     print(f"Registered R1 Information Job {config.JOB_ID!r}.")
-    print("Ask 'Is the system healthy?' or type 'exit'.\n")
+    print(f"Ask {DEFAULT_QUERY!r} or type 'exit'.\n")
 
     try:
         while True:
