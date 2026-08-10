@@ -17,6 +17,17 @@ xApp evidence file is used by the Evidence API or rApp. See
 `xapps/health-xapp/README.md`, `services/evidence-api/README.md`, and
 `rapps/agentic-rapp/README.md` for VM build and startup instructions.
 
+The rApp persists accepted structured observations and per-thread advisory
+conversation context in SQLite. It rolls observations into 60-second windows,
+stores an internal DeepSeek digest for each completed window, and supplies the
+last digest plus the current partial window when an operator asks a question.
+The current frozen snapshot still goes through deterministic health checks and
+remains the only source of the authoritative status.
+
+This runtime memory is implemented inside `rapps/agentic-rapp/`; the separate
+`agentic_core/` Ollama/PostgreSQL smoke-test graph is still experimental and is
+not imported by, or connected to, the live rApp pipeline.
+
 ## Current Testbed
 
 The current development environment uses:

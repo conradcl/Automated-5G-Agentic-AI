@@ -5,7 +5,7 @@ import copy
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from typing import Callable, Optional, TypedDict
 
 import requests
 from flask import Flask, jsonify, request
@@ -24,8 +24,10 @@ class HealthSnapshot(TypedDict):
 
 _lock = threading.RLock()
 _latest_snapshot: Optional[HealthSnapshot] = None
+_snapshot_sink: Optional[Callable[[HealthSnapshot], object]] = None
 
 receiver_app = Flask(__name__)
+receiver_app.config["MAX_CONTENT_LENGTH"] = config.CONSUMER_MAX_BODY_BYTES
 
 
 @receiver_app.route(config.CONSUMER_CALLBACK_PATH, methods=["POST"])
@@ -61,6 +63,17 @@ def receive_health_data() -> tuple:
     )
     with _lock:
         _latest_snapshot = snapshot
+        sink = _snapshot_sink
+    if sink is not None:
+        try:
+            # The runtime attaches a bounded non-blocking queue here. Keep the
+            # generic hook outside the latest-snapshot lock so readers are never
+            # held behind persistence work.
+            sink(copy.deepcopy(snapshot))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not append accepted telemetry to rApp memory"
+            )
     return jsonify({"status": "accepted"}), 200
 
 
@@ -109,9 +122,19 @@ def deregister_consumer_job() -> None:
 
 
 def reset_state() -> None:
-    global _latest_snapshot
+    global _latest_snapshot, _snapshot_sink
     with _lock:
         _latest_snapshot = None
+        _snapshot_sink = None
+
+
+def set_snapshot_sink(
+    sink: Optional[Callable[[HealthSnapshot], object]],
+) -> None:
+    """Attach durable history storage without changing the R1 callback API."""
+    global _snapshot_sink
+    with _lock:
+        _snapshot_sink = sink
 
 
 def run_receiver() -> None:

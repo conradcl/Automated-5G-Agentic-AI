@@ -8,6 +8,7 @@ separate also makes the same code usable in containers later.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 
 def _env_int(name: str, default: int) -> int:
@@ -23,6 +24,18 @@ def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     if raw is None:
         return default
     return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value")
 
 
 # R1/DME-lite broker
@@ -49,6 +62,7 @@ CONSUMER_BASE_URL = os.environ.get(
 CONSUMER_CALLBACK_PATH = os.environ.get(
     "CONSUMER_CALLBACK_PATH", "/consumer/health-data"
 )
+CONSUMER_MAX_BODY_BYTES = _env_int("CONSUMER_MAX_BODY_BYTES", 262144)
 
 # Source freshness is based on the xApp's KPM observation timestamp, never on
 # the time at which an adapter happens to deliver or redeliver the message.
@@ -78,3 +92,61 @@ DEEPSEEK_TIMEOUT_S = _env_float("DEEPSEEK_TIMEOUT_S", 20.0)
 DEEPSEEK_MAX_TOKENS = _env_int("DEEPSEEK_MAX_TOKENS", 600)
 DEEPSEEK_MAX_QUESTION_CHARS = _env_int("DEEPSEEK_MAX_QUESTION_CHARS", 2000)
 DEEPSEEK_MAX_INPUT_CHARS = _env_int("DEEPSEEK_MAX_INPUT_CHARS", 50000)
+
+# Durable rApp memory. Structured telemetry samples and advisory conversation
+# context are stored locally; no terminal logs or free-form text files are used.
+_RAPP_DIRECTORY = Path(__file__).resolve().parent
+RAPP_MEMORY_ENABLED = _env_bool("RAPP_MEMORY_ENABLED", True)
+RAPP_MEMORY_DB_PATH = os.environ.get(
+    "RAPP_MEMORY_DB_PATH",
+    str(_RAPP_DIRECTORY / "data" / "rapp_memory.sqlite3"),
+)
+RAPP_DEFAULT_THREAD_ID = os.environ.get(
+    "RAPP_DEFAULT_THREAD_ID", "health-agent-cli"
+)
+RAPP_MAX_THREAD_ID_CHARS = _env_int("RAPP_MAX_THREAD_ID_CHARS", 128)
+RAPP_CONVERSATION_CONTEXT_TURNS = _env_int(
+    "RAPP_CONVERSATION_CONTEXT_TURNS", 8
+)
+RAPP_CONVERSATION_RETAINED_TURNS = _env_int(
+    "RAPP_CONVERSATION_RETAINED_TURNS", 100
+)
+RAPP_MEMORY_MAX_CONTEXT_CHARS = _env_int(
+    "RAPP_MEMORY_MAX_CONTEXT_CHARS", 30000
+)
+RAPP_MEMORY_MAX_ADVISORY_CHARS = _env_int(
+    "RAPP_MEMORY_MAX_ADVISORY_CHARS", 4000
+)
+
+# The Health xApp normally produces one structured observation per second. A
+# window is time-based rather than count-based, because delayed/missing network
+# deliveries mean a 60-second interval is not guaranteed to contain 60 samples.
+TELEMETRY_MEMORY_WINDOW_S = _env_float("TELEMETRY_MEMORY_WINDOW_S", 60.0)
+TELEMETRY_MEMORY_WINDOW_CLOSE_GRACE_S = _env_float(
+    "TELEMETRY_MEMORY_WINDOW_CLOSE_GRACE_S", 1.0
+)
+TELEMETRY_MEMORY_POLL_S = _env_float("TELEMETRY_MEMORY_POLL_S", 1.0)
+TELEMETRY_MEMORY_INGEST_QUEUE_SIZE = _env_int(
+    "TELEMETRY_MEMORY_INGEST_QUEUE_SIZE", 1000
+)
+TELEMETRY_MEMORY_CONTEXT_WINDOWS = _env_int(
+    "TELEMETRY_MEMORY_CONTEXT_WINDOWS", 1
+)
+TELEMETRY_MEMORY_MAX_SAMPLES_PER_PAYLOAD = _env_int(
+    "TELEMETRY_MEMORY_MAX_SAMPLES_PER_PAYLOAD", 120
+)
+TELEMETRY_MEMORY_MAX_PAYLOAD_CHARS = _env_int(
+    "TELEMETRY_MEMORY_MAX_PAYLOAD_CHARS", 30000
+)
+TELEMETRY_MEMORY_RAW_RETENTION_HOURS = _env_float(
+    "TELEMETRY_MEMORY_RAW_RETENTION_HOURS", 24.0
+)
+TELEMETRY_MEMORY_RETAINED_WINDOWS = _env_int(
+    "TELEMETRY_MEMORY_RETAINED_WINDOWS", 1440
+)
+TELEMETRY_MEMORY_SUMMARY_MAX_TOKENS = _env_int(
+    "TELEMETRY_MEMORY_SUMMARY_MAX_TOKENS", 300
+)
+TELEMETRY_MEMORY_MAX_DIGEST_CHARS = _env_int(
+    "TELEMETRY_MEMORY_MAX_DIGEST_CHARS", 8000
+)

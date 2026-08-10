@@ -40,6 +40,12 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# Local rApp conversational/telemetry memory
+rapps/agentic-rapp/data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
 # Large generated data files
 *.pcap
 *.pcapng
