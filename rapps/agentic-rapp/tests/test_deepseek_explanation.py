@@ -138,6 +138,82 @@ def test_request_is_structured_evidence_without_a_verdict() -> None:
     assert "test-secret" not in json.dumps(request_body)
 
 
+def test_length_finish_reason_retries_once_with_a_larger_bounded_budget() -> None:
+    requests: list[dict[str, Any]] = []
+    responses = iter(
+        [
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "Incomplete first attempt"},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+            ),
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": "Complete retry."},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+
+    def post(_url: str, **kwargs: Any) -> FakeResponse:
+        requests.append(kwargs["json"])
+        return next(responses)
+
+    client = DeepSeekExplainer(
+        api_key="test-secret",
+        max_tokens=300,
+        truncation_retry_max_tokens=900,
+        http_post=post,
+    )
+
+    assert client.explain("question", _evidence()) == "Complete retry."
+    assert [request["max_tokens"] for request in requests] == [300, 600]
+    assert "previous generation reached its output limit" not in requests[0][
+        "messages"
+    ][0]["content"]
+    assert "previous generation reached its output limit" in requests[1][
+        "messages"
+    ][0]["content"]
+
+
+def test_repeated_length_finish_reason_uses_bounded_failure() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def post(_url: str, **kwargs: Any) -> FakeResponse:
+        requests.append(kwargs["json"])
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "Still incomplete"},
+                        "finish_reason": "length",
+                    }
+                ]
+            }
+        )
+
+    client = DeepSeekExplainer(
+        api_key="test-secret",
+        max_tokens=300,
+        truncation_retry_max_tokens=900,
+        http_post=post,
+    )
+
+    with pytest.raises(ExplanationUnavailable, match="remained truncated"):
+        client.explain("question", _evidence())
+    assert [request["max_tokens"] for request in requests] == [300, 600]
+
+
 def test_evidence_contains_metric_semantics_and_calculated_timing() -> None:
     snapshot = _snapshot(
         metrics={

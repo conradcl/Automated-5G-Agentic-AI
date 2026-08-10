@@ -24,6 +24,14 @@ last digest plus the current partial window when an operator asks a question.
 The current frozen snapshot still goes through deterministic health checks and
 remains the only source of the authoritative status.
 
+For advisory questions, the live rApp LangGraph can let DeepSeek select bounded
+read-only evidence tools for DME/Information Job status, Evidence API
+readiness/history, SQLite telemetry windows and sequence advancement, a fixed
+UE ping, and allowlisted OAI container inspection. Tool results remain
+advisory; the frozen R1 snapshot is still the sole input to deterministic
+health status. The model cannot supply command, URL, SQL, SSH, Docker,
+interface, destination, or container arguments.
+
 This runtime memory is implemented inside `rapps/agentic-rapp/`; the separate
 `agentic_core/` Ollama/PostgreSQL smoke-test graph is still experimental and is
 not imported by, or connected to, the live rApp pipeline.
@@ -41,7 +49,13 @@ The current development environment uses:
 
 Current data collection is local to the VM, but the project is being designed so the same agent framework can later be adapted to a real lab 5G system through SSH, APIs, log files, monitoring tools, or O-RAN/xApp interfaces.
 
-## Current Features
+## Legacy Python Chatbot Features
+
+The following section describes `legacy/python-chatbot/`, not the live
+`rapps/agentic-rapp/` pipeline. In particular, its whole-testbed diagnostics,
+downlink ping, session records, and command-oriented workflows do not expand
+the live rApp's deterministic RIC/E2 KPM assessment scope.
+
 ### Live System-State Collection
 
 The agent currently collects:
@@ -155,7 +169,7 @@ Note: `agentic_core/` uses its own `requirements.txt` and virtual environment, s
 - LangGraph is installed and confirmed working end-to-end: a single-node graph (`brain1`) builds, compiles, and executes correctly against a local LLM served via  Ollama.
 - Currently running `llama3.2:3b` for development/testing purposes.
 - Postgres-backed checkpointer is wired in and confirmed working: Postgres runs via `docker-compose.yml` in `agentic_core/`, and graph state persists correctly across separate invocations sharing the same `thread_id` (verified via a two-turn smoke test where the agent correctly recalled information from a prior turn).
-- No tool nodes are implemented yet. Brain 1 currently has no access to live testbed data.
+- The separate `agentic_core/` smoke-test graph still has no tool nodes and no live testbed access. The fixed read-only tools described above belong only to `rapps/agentic-rapp/`, which does not import `agentic_core/`.
 - Brain 2 (ONNX classifiers) and the PAOR (Perceive–Act–Observe–Reflect) loop structure have not been started.
 
 ### Setup

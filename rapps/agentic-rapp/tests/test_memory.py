@@ -887,5 +887,63 @@ def test_window_summary_call_is_internal_structured_and_verdict_free() -> None:
     serialized = json.dumps(model_input)
     assert "overall_status" not in serialized
     assert "health_report" not in serialized
-    assert request["max_tokens"] == 300
+    assert request["max_tokens"] == config.TELEMETRY_MEMORY_SUMMARY_MAX_TOKENS
     assert "not shown directly" in request["messages"][0]["content"]
+
+
+def test_window_summary_retries_once_when_output_limit_is_reached(
+    monkeypatch,
+) -> None:
+    at = BASE
+    sample = StoredSample(1, _text(at), at.timestamp(), _snapshot(1, at))
+    window = build_window_payload(
+        [sample],
+        window_start=_text(at),
+        window_end=_text(at + timedelta(seconds=60)),
+        window_kind="completed",
+    )
+    monkeypatch.setattr(config, "TELEMETRY_MEMORY_SUMMARY_MAX_TOKENS", 300)
+    requests: list[dict[str, Any]] = []
+    responses = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {"content": "Incomplete summary"},
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "message": {"content": "Complete bounded summary."},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        ]
+    )
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body: dict[str, Any]) -> None:
+            self.body = body
+
+        def json(self) -> dict[str, Any]:
+            return self.body
+
+    def post(_url: str, **kwargs: Any) -> Response:
+        requests.append(kwargs["json"])
+        return Response(next(responses))
+
+    client = deepseek_client.DeepSeekExplainer(
+        api_key="secret",
+        max_tokens=600,
+        truncation_retry_max_tokens=900,
+        http_post=post,
+    )
+
+    assert client.summarize_window(window) == "Complete bounded summary."
+    assert [request["max_tokens"] for request in requests] == [300, 600]

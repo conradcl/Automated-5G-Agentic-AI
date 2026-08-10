@@ -1123,6 +1123,10 @@ class RAppMemory:
             );
             CREATE INDEX IF NOT EXISTS telemetry_samples_time_idx
                 ON telemetry_samples(recorded_epoch, id);
+            CREATE INDEX IF NOT EXISTS telemetry_samples_stream_time_idx
+                ON telemetry_samples(
+                    source, source_instance_id, recorded_epoch, id
+                );
 
             CREATE TABLE IF NOT EXISTS telemetry_windows (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1541,6 +1545,294 @@ class RAppMemory:
             )
         return context
 
+    def read_recent_window_facts(
+        self,
+        *,
+        limit: int,
+        max_samples: int,
+        max_bytes: int,
+    ) -> list[dict[str, Any]]:
+        """Return bounded deterministic facts without exposing SQL or digests."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
+            raise ValueError("recent telemetry window limit must be between 1 and 10")
+        if (
+            isinstance(max_samples, bool)
+            or not isinstance(max_samples, int)
+            or not 1 <= max_samples <= 10_000
+        ):
+            raise ValueError("recent telemetry window sample cap must be between 1 and 10000")
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or not 65_536 <= max_bytes <= 50_000_000
+        ):
+            raise ValueError(
+                "recent telemetry window byte cap must be between 65536 and 50000000"
+            )
+        with self._lock:
+            window_rows = self._connection.execute(
+                """
+                SELECT first_sample_id, last_sample_id, window_start, window_end,
+                       received_sample_count, digest_source, llm_error
+                FROM telemetry_windows
+                ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            resolved: list[
+                tuple[sqlite3.Row, list[sqlite3.Row], Optional[str]]
+            ] = []
+            remaining_samples = max_samples
+            remaining_bytes = max_bytes
+            for window_row in window_rows:
+                expected_count = int(window_row["received_sample_count"])
+                if expected_count < 1:
+                    resolved.append(
+                        (window_row, [], "raw_samples_pruned_or_incomplete")
+                    )
+                    continue
+                if expected_count > remaining_samples:
+                    resolved.append(
+                        (window_row, [], "sample_budget_exceeded")
+                    )
+                    continue
+                storage = self._connection.execute(
+                    """
+                    SELECT COUNT(*) AS count,
+                           COALESCE(
+                               SUM(LENGTH(CAST(snapshot_json AS BLOB))), 0
+                           ) AS stored_bytes,
+                           MIN(id) AS first_id,
+                           MAX(id) AS last_id
+                    FROM telemetry_samples
+                    WHERE id BETWEEN ? AND ?
+                    """,
+                    (
+                        int(window_row["first_sample_id"]),
+                        int(window_row["last_sample_id"]),
+                    ),
+                ).fetchone()
+                raw_rows_complete = (
+                    int(storage["count"]) == expected_count
+                    and storage["first_id"] is not None
+                    and storage["last_id"] is not None
+                    and int(storage["first_id"])
+                    == int(window_row["first_sample_id"])
+                    and int(storage["last_id"])
+                    == int(window_row["last_sample_id"])
+                )
+                if not raw_rows_complete:
+                    resolved.append(
+                        (window_row, [], "raw_samples_pruned_or_incomplete")
+                    )
+                    continue
+                stored_bytes = int(storage["stored_bytes"])
+                if stored_bytes > remaining_bytes:
+                    resolved.append((window_row, [], "byte_budget_exceeded"))
+                    continue
+                sample_rows = self._connection.execute(
+                    """
+                    SELECT id, recorded_at, recorded_epoch, snapshot_json
+                    FROM telemetry_samples
+                    WHERE id BETWEEN ? AND ?
+                    ORDER BY id
+                    LIMIT ?
+                    """,
+                    (
+                        int(window_row["first_sample_id"]),
+                        int(window_row["last_sample_id"]),
+                        expected_count,
+                    ),
+                ).fetchall()
+                remaining_samples -= len(sample_rows)
+                remaining_bytes -= stored_bytes
+                resolved.append((window_row, sample_rows, None))
+
+        windows: list[dict[str, Any]] = []
+        for window_row, sample_rows, unavailable_reason in resolved:
+            expected_count = int(window_row["received_sample_count"])
+            raw_complete = (
+                len(sample_rows) == expected_count
+                and bool(sample_rows)
+                and int(sample_rows[0]["id"])
+                == int(window_row["first_sample_id"])
+                and int(sample_rows[-1]["id"])
+                == int(window_row["last_sample_id"])
+            )
+            facts = None
+            if raw_complete:
+                samples = tuple(self._row_to_sample(row) for row in sample_rows)
+                facts = _window_facts(
+                    samples,
+                    max_metric_series=16,
+                    max_sequence_streams=8,
+                    max_missing_names=32,
+                )
+            elif unavailable_reason is None:
+                unavailable_reason = "raw_samples_pruned_or_incomplete"
+            windows.append(
+                {
+                    "window_start": window_row["window_start"],
+                    "window_end": window_row["window_end"],
+                    "received_sample_count": expected_count,
+                    "digest_source": window_row["digest_source"],
+                    "digest_error_present": window_row["llm_error"] is not None,
+                    "facts_available": facts is not None,
+                    "facts_unavailable_reason": unavailable_reason,
+                    "all_sample_facts": facts,
+                }
+            )
+        return windows
+
+    def read_sequence_advancement(
+        self,
+        *,
+        lookback_seconds: float,
+        max_samples: int,
+        now: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        """Summarize received sequence progress per source instance."""
+        if (
+            isinstance(lookback_seconds, bool)
+            or not isinstance(lookback_seconds, (int, float))
+            or not math.isfinite(lookback_seconds)
+            or not 1 <= lookback_seconds <= 3600
+        ):
+            raise ValueError("sequence lookback must be between 1 and 3600 seconds")
+        if (
+            isinstance(max_samples, bool)
+            or not isinstance(max_samples, int)
+            or not 2 <= max_samples <= 5000
+        ):
+            raise ValueError("sequence sample cap must be between 2 and 5000")
+        observed_now = _utc(now)
+        cutoff = observed_now.timestamp() - float(lookback_seconds)
+        with self._lock:
+            stream_limit = min(32, max_samples)
+            known_stream_count = int(
+                self._connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM (
+                        SELECT 1 FROM telemetry_samples
+                        GROUP BY source, source_instance_id
+                    )
+                    """
+                ).fetchone()["count"]
+            )
+            stream_rows = self._connection.execute(
+                """
+                SELECT source, source_instance_id, MAX(id) AS last_id
+                FROM telemetry_samples
+                GROUP BY source, source_instance_id
+                ORDER BY last_id DESC
+                LIMIT ?
+                """,
+                (stream_limit,),
+            ).fetchall()
+            stream_cap_reached = known_stream_count > stream_limit
+            selected_streams = stream_rows
+            stream_count = len(selected_streams)
+            base_budget = max_samples // stream_count if stream_count else 0
+            extra_budget = max_samples % stream_count if stream_count else 0
+            resolved_streams: list[
+                tuple[sqlite3.Row, list[sqlite3.Row], sqlite3.Row, bool]
+            ] = []
+            for index, stream in enumerate(selected_streams):
+                budget = base_budget + (1 if index < extra_budget else 0)
+                recent_descending = self._connection.execute(
+                    """
+                    SELECT recorded_at, source, source_instance_id,
+                           sequence_number
+                    FROM telemetry_samples
+                    WHERE source = ? AND source_instance_id = ?
+                      AND recorded_epoch >= ?
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (
+                        stream["source"],
+                        stream["source_instance_id"],
+                        cutoff,
+                        budget + 1,
+                    ),
+                ).fetchall()
+                latest = self._connection.execute(
+                    """
+                    SELECT recorded_at, sequence_number
+                    FROM telemetry_samples WHERE id = ?
+                    """,
+                    (int(stream["last_id"]),),
+                ).fetchone()
+                if latest is None:
+                    continue
+                per_stream_cap = len(recent_descending) > budget
+                recent = list(reversed(recent_descending[:budget]))
+                resolved_streams.append(
+                    (stream, recent, latest, per_stream_cap)
+                )
+
+        streams = []
+        sample_count = 0
+        sample_cap_reached = False
+        for stream, recent_rows, latest, per_stream_cap in resolved_streams:
+            source = str(stream["source"])
+            instance = str(stream["source_instance_id"])
+            sequences = [int(row["sequence_number"]) for row in recent_rows]
+            sample_count += len(sequences)
+            sample_cap_reached = sample_cap_reached or per_stream_cap
+            gaps = 0
+            non_increasing = 0
+            for previous, current in zip(sequences, sequences[1:]):
+                if current > previous:
+                    gaps += max(0, current - previous - 1)
+                else:
+                    non_increasing += 1
+            if not sequences:
+                advancement_state = "no_recent_observations"
+            elif len(sequences) < 2:
+                advancement_state = "insufficient_samples"
+            elif non_increasing:
+                advancement_state = "non_monotonic"
+            else:
+                advancement_state = "advancing"
+            latest_at = parse_timestamp(latest["recorded_at"])
+            latest_age = None
+            if latest_at is not None:
+                latest_age = max(
+                    0.0,
+                    (observed_now - latest_at).total_seconds(),
+                )
+            streams.append(
+                {
+                    "source": _bounded_label(source, 64),
+                    "source_instance_id": _bounded_label(instance, 64),
+                    "observations": len(sequences),
+                    "first_sequence": sequences[0] if sequences else None,
+                    "last_sequence": sequences[-1] if sequences else None,
+                    "observed_sequence_gaps": gaps,
+                    "non_increasing_steps": non_increasing,
+                    "advancement_state": advancement_state,
+                    "first_received_at": (
+                        recent_rows[0]["recorded_at"] if recent_rows else None
+                    ),
+                    "last_received_at": (
+                        recent_rows[-1]["recorded_at"] if recent_rows else None
+                    ),
+                    "last_known_sequence": int(latest["sequence_number"]),
+                    "last_known_received_at": latest["recorded_at"],
+                    "last_known_age_seconds": latest_age,
+                }
+            )
+        return {
+            "lookback_seconds": float(lookback_seconds),
+            "sample_count": sample_count,
+            "sample_cap_reached": sample_cap_reached,
+            "retained_stream_count": known_stream_count,
+            "returned_stream_count": len(streams),
+            "stream_cap_reached": stream_cap_reached,
+            "duplicates_observable": False,
+            "streams": streams,
+        }
+
     def prune(self, *, now: Optional[datetime] = None) -> None:
         cutoff = _utc(now).timestamp() - self.raw_retention_hours * 3600.0
         with self._lock, self._connection:
@@ -1605,6 +1897,12 @@ class NullRAppMemory:
 
     def build_query_context(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+    def read_recent_window_facts(self, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("durable telemetry memory is unavailable")
+
+    def read_sequence_advancement(self, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("durable telemetry memory is unavailable")
 
 
 class SnapshotMemoryWriter:

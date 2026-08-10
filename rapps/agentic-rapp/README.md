@@ -3,18 +3,20 @@
 The rApp subscribes to live Health xApp evidence through the lab R1/DME
 interface, performs deterministic checks for the RIC/E2 KPM telemetry
 monitoring path with LangGraph, and can ask DeepSeek to interpret the evidence
-in concise advisory prose. It consumes telemetry JSON over the network; it does
-not scrape xApp output files, logs, or terminal text. Accepted observations and
-conversation context are retained as structured records in a local SQLite
-database so the rApp can reason over recent history and survive restarts.
+in concise advisory prose. When a question needs more evidence, DeepSeek can
+select from a fixed catalog of bounded, read-only collectors before answering.
+The rApp consumes telemetry JSON over the network; it does not scrape xApp
+output files, logs, or terminal text. Accepted observations and conversation
+context are retained as structured records in a local SQLite database so the
+rApp can reason over recent history and survive restarts.
 
 ```text
 E2 node -> Health xApp -> Evidence API -> R1/DME job -> rApp -> LangGraph
 ```
 
 `app.py` is the lab R1/DME-lite broker, not the controller. `main.py`,
-`consumer.py`, `memory.py`, `health_checks.py`, and `graph.py` form the
-read-only rApp.
+`consumer.py`, `memory.py`, `read_tools.py`, `health_checks.py`, and `graph.py`
+form the read-only rApp.
 
 ## Install
 
@@ -49,6 +51,11 @@ For least privilege, do not expose that key to the DME process. The default
 model is `deepseek-v4-flash`. If the key is absent or the API is unavailable,
 the rApp continues with a local deterministic prose fallback.
 The default `DEEPSEEK_TEMPERATURE=0.1` reduces response variation.
+Normal explanations allow 1,200 output tokens and hidden minute summaries allow
+800 by default. If DeepSeek reports `finish_reason=length`, the client retries
+once with a bounded larger output budget and a stricter brevity instruction.
+This retry changes only response length handling; the verdict-free evidence
+boundary and deterministic health authority remain unchanged.
 
 ```bash
 export DEEPSEEK_API_KEY=your_key_here
@@ -155,10 +162,49 @@ user questions and prior *DeepSeek advisory explanations*. Deterministic status,
 the `HealthReport`, check results, and fallback prose are never replayed to the
 model as conversation memory.
 
+## Model-selected read-only evidence tools
+
+When `RAPP_READ_TOOLS_ENABLED=true` and DeepSeek is configured, the graph lets
+the model request additional evidence only when the question needs it. The
+catalog contains seven fixed, zero-argument tools:
+
+| Tool | Evidence returned |
+| --- | --- |
+| `get_dme_job_status` | DME liveness/counts and the configured Information Job's registration, state, producer IDs, owner, information type, and callback matches |
+| `get_evidence_pipeline_status` | Evidence API liveness/readiness, repository and DME-registration flags, producer liveness, evidence-received flag, and active-job count |
+| `get_evidence_history` | A bounded, normalized set of canonical Evidence API events; raw bodies and full metric values are omitted |
+| `get_recent_telemetry_windows` | Deterministic facts for recent SQLite windows; saved model digests and arbitrary SQL are not exposed |
+| `get_sequence_advancement` | Per-source-instance sequence advancement, observed gaps, and non-increasing observations over a bounded lookback |
+| `ping_ue_path` | One bounded uplink ICMP sample from the configured UE interface to the configured literal IP, returning packet loss and RTT statistics |
+| `get_oai_container_status` | Runtime and health state for only the configured OAI container allowlist |
+
+The model supplies no arguments. HTTP origins, job identity, ping destination,
+interface, count, and container names all come from operator configuration.
+HTTP collectors use fixed GET paths, reject redirects, cap response bodies, and
+ignore environment proxy variables. Process collectors use fixed absolute
+executables with `shell=False`; no model-provided shell, SQL, HTTP, SSH, Docker,
+interface, destination, or container argument is accepted. A tool name is used
+at most once per question, and the complete loop is capped by
+`RAPP_READ_TOOL_MAX_CALLS`.
+
+These observations have deliberately narrow meanings:
+
+- DME `ENABLED` does not prove that R1 delivery succeeded.
+- An Evidence API active-job count does not prove that the configured job is active.
+- A sequence gap means that this rApp did not retain an observation; it is not proof of IP packet loss. Duplicate deliveries are not observable after SQLite uniqueness filtering.
+- The ping is a bounded active probe, not a complete subscriber-performance assessment.
+- Container runtime/health state does not prove that the application or 5G service is correct.
+
+`ask_structured(...)` exposes execution metadata under `answer["read_tools"]`,
+including tools used, bounded results, stop reason, and any planning error.
+Existing `ask(...)` behavior and the deterministic health report remain intact.
+If DeepSeek, a collector, or result validation fails, the graph safely uses the
+existing explanation/fallback path.
+
 ## DeepSeek evidence boundary
 
 For a normal stateful question, the model receives one JSON user message with
-this shape:
+this shape (the native function catalog is carried separately):
 
 ```json
 {
@@ -172,6 +218,7 @@ this shape:
     "metric_semantics": {},
     "interpretation_context": {}
   },
+  "read_tool_results": [],
   "memory_context": {
     "memory_schema_version": "1.0",
     "thread_id": "health-agent-cli",
@@ -182,6 +229,11 @@ this shape:
   }
 }
 ```
+
+The first planning request contains an empty result array. After each selected
+tool, the graph sends the same frozen evidence and bounded memory context plus
+the validated results collected so far. Every advertised function has an
+empty-object parameter schema.
 
 Only allowlisted wire-contract telemetry, R1 delivery metadata, calculated
 timing facts, static metric semantics, and configured freshness/required-metric
@@ -218,9 +270,13 @@ cost.
 External question and minute-digest requests can include the xApp source and
 instance identifiers, R1 delivery timestamps, measurement names/values/units,
 missing metric names, connection/count fields, recent advisory conversation,
-and freshness context. With continuous evidence, minute digestion can add up to
-1,440 model calls per day. Do not enable DeepSeek if this data, call volume, or
-cost is unacceptable outside the lab environment.
+and freshness context. Tool-enabled questions can additionally include
+DME/Evidence API status and normalized history, deterministic SQLite
+window/sequence facts, the configured ping interface and target plus loss/RTT,
+and allowlisted container names and runtime states. With continuous evidence,
+minute digestion can add up to 1,440 model calls per day, before any extra
+question-time planning calls. Do not enable DeepSeek if this data, call volume,
+or cost is unacceptable outside the lab environment.
 
 The R1 callback has a configurable request-body limit but no application-layer
 authentication in this lab MVP. Keep its default loopback bind or protect a
@@ -229,12 +285,17 @@ The default memory directory is created owner-only and the SQLite database is
 mode `0600`; operators using a custom existing parent directory must secure that
 directory themselves.
 
-The local graph deliberately calls DeepSeek before it creates the deterministic
-monitoring-path report. It evaluates the same frozen snapshot afterward,
-preserves the report in the structured application result, and uses it for
-fallback if the interpretation call fails. Phase 1 is explanation-only and
-has no tools: DeepSeek cannot execute commands or change the testbed. State is
-owned and bounded by the local rApp database rather than by the model provider.
+The local graph freezes the latest snapshot before any model call. DeepSeek may
+then select up to `RAPP_READ_TOOL_MAX_CALLS` distinct tools from the fixed
+catalog, one at a time. Each result is validated, bounded, and returned as
+untrusted evidence for the next planning step. After the model returns advisory
+prose, or tool planning safely falls back, the graph evaluates the original
+frozen snapshot with deterministic health checks.
+
+Read-tool results can inform only the advisory explanation. They are never
+passed to `evaluate_health`, cannot change `overall_status`, and cannot execute
+repairs or other mutations. State remains owned and bounded by the local rApp
+database rather than by the model provider.
 
 ## Health evaluation
 
@@ -263,6 +324,52 @@ for memory cadence, context limits, raw retention, retained digest count, and
 database-path settings. Raw samples default to 24 hours of retention; the
 latest 1,440 completed digests and 100 turns per conversation are retained.
 Retention pruning also runs periodically when no new window completes.
+
+Read-tool limits are validated when the registry starts. The supported ranges
+are:
+
+| Setting | Supported range |
+| --- | --- |
+| `RAPP_READ_TOOL_MAX_CALLS` | 1–7 distinct calls per question |
+| `RAPP_READ_TOOL_HTTP_TIMEOUT_S` | greater than 0 through 30 seconds |
+| `RAPP_READ_TOOL_HTTP_MAX_BODY_BYTES` | 1,024–2,000,000 bytes per response |
+| `RAPP_READ_TOOL_MAX_RESULT_CHARS` | 1,000–200,000 serialized characters |
+| `RAPP_READ_TOOL_HISTORY_LIMIT` | 1–120 events |
+| `RAPP_READ_TOOL_WINDOW_LIMIT` | 1–10 completed windows |
+| `RAPP_READ_TOOL_WINDOW_MAX_SAMPLES` | 1–10,000 raw samples shared across requested windows |
+| `RAPP_READ_TOOL_WINDOW_MAX_BYTES` | 65,536–50,000,000 stored JSON bytes shared across requested windows |
+| `RAPP_READ_TOOL_SEQUENCE_LOOKBACK_S` | 5–300 seconds |
+| `RAPP_READ_TOOL_SEQUENCE_MAX_SAMPLES` | 2–2,000 samples |
+| `RAPP_READ_TOOL_PING_COUNT` | 1–10 requests |
+| `RAPP_READ_TOOL_PING_REPLY_TIMEOUT_S` | 1–10 seconds per reply |
+| `RAPP_READ_TOOL_COMMAND_TIMEOUT_S` | 1–30 seconds |
+| `RAPP_READ_TOOL_OAI_CONTAINERS` | 1–16 unique, safely named containers |
+
+The window sample and stored-byte budgets are shared across all requested
+windows. If retained raw rows were pruned, incomplete, or would exceed either
+budget, the tool reports facts as unavailable for the affected window instead
+of exposing a stored model digest or silently returning partial facts.
+
+### Read-tool operational requirements
+
+`DME_BASE_URL` and `EVIDENCE_API_BASE_URL` must be directly reachable from the
+rApp when their tools are selected. For tool use, both values must be HTTP(S)
+origins without credentials, paths, queries, or fragments. Tool HTTP requests
+do not follow redirects or use environment-configured proxies. Keep the APIs on
+loopback or protect non-loopback deployments with network policy and TLS.
+
+`/usr/bin/ping` and `/usr/bin/docker` are required only when their tools are
+selected. The ping tool may require the host's normal ICMP capability, and the
+configured UE interface must exist. It sends up to the configured number of
+ICMP requests, so it is non-mutating but is not a passive observation.
+
+Container inspection requires access to the Docker daemon. Docker socket or
+Docker-group access is effectively host-level privilege even though this rApp
+invokes only a fixed, read-only inspect operation. Do not grant Docker access
+solely for this feature without accepting that risk. Set
+`RAPP_READ_TOOLS_ENABLED=false` when the model-selected collectors are not
+appropriate; the existing explanation and deterministic-fallback behavior
+continues without them.
 
 Run the rApp regression suite with:
 
