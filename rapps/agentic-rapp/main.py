@@ -1,13 +1,22 @@
-"""Interactive entry point for the read-only Health Agent rApp."""
+"""Interactive or headless entry point for the automated Health Agent rApp."""
 from __future__ import annotations
 
+import signal
+import sys
 import threading
 import time
 
 import config
 import consumer
+from automation import IncidentAutomationWorker
 from deepseek_client import DeepSeekExplainer
-from graph import DEFAULT_QUERY, ask, reset_runtime_graph
+from graph import (
+    DEFAULT_QUERY,
+    ask,
+    ask_structured,
+    build_graph,
+    reset_runtime_graph,
+)
 from memory import (
     RAppMemory,
     NullRAppMemory,
@@ -16,6 +25,87 @@ from memory import (
     close_runtime_memory,
     get_runtime_memory,
 )
+
+
+def _register_information_job() -> bool:
+    """Register once at startup, deferring transient recovery to automation."""
+    try:
+        consumer.register_consumer_job()
+    except Exception as exc:
+        message = (
+            f"Could not register the rApp Information Job with "
+            f"{config.DME_BASE_URL}: {exc}"
+        )
+        if not config.RAPP_AUTOMATION_ENABLED:
+            raise SystemExit(message) from exc
+        print(
+            f"Warning: {message}. Automatic incident recovery will keep "
+            "running and retry reconciliation."
+        )
+        return False
+
+    print(f"Registered R1 Information Job {config.JOB_ID!r}.")
+    return True
+
+
+def _deregister_information_job(registered: bool) -> None:
+    """Best-effort cleanup, including jobs created later by automation."""
+    if registered or config.RAPP_AUTOMATION_ENABLED:
+        consumer.deregister_consumer_job()
+
+
+def _wait_for_headless_shutdown(
+    shutdown_event: threading.Event | None = None,
+) -> None:
+    """Keep a non-interactive service alive until SIGTERM or Ctrl-C."""
+    shutdown_event = shutdown_event or threading.Event()
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+
+    def request_shutdown(_signum, _frame) -> None:
+        shutdown_event.set()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    print("Headless automation is running; send SIGTERM or Ctrl-C to stop.")
+    try:
+        while not shutdown_event.wait(1.0):
+            pass
+    except KeyboardInterrupt:
+        print()
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
+
+
+def _run_user_interface() -> None:
+    """Run the existing CLI on a TTY, otherwise host the headless service."""
+    if not sys.stdin.isatty():
+        _wait_for_headless_shutdown()
+        return
+
+    while True:
+        try:
+            query = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if query.lower() in {"exit", "quit"}:
+            break
+        if not query:
+            continue
+        print(f"agent> {ask(query)}\n")
+
+
+def _build_automation_diagnoser(memory_store):
+    """Create an automation-only graph so CLI calls cannot block its cadence."""
+    automation_graph = build_graph(memory_store=memory_store)
+
+    def diagnose(query: str, thread_id: str | None):
+        return ask_structured(
+            query,
+            thread_id=thread_id,
+            compiled_graph=automation_graph,
+        )
+
+    return diagnose
 
 
 def main() -> None:
@@ -43,6 +133,7 @@ def main() -> None:
     receiver_thread = threading.Thread(target=consumer.run_receiver, daemon=True)
     receiver_thread.start()
     time.sleep(0.5)
+    automation_worker = None
 
     print(
         f"Receiver listening at "
@@ -50,16 +141,17 @@ def main() -> None:
     )
     registered = False
     try:
-        try:
-            consumer.register_consumer_job()
-            registered = True
-        except Exception as exc:
-            raise SystemExit(
-                f"Could not register the rApp Information Job with "
-                f"{config.DME_BASE_URL}: {exc}"
-            ) from exc
-
-        print(f"Registered R1 Information Job {config.JOB_ID!r}.")
+        registered = _register_information_job()
+        if config.RAPP_AUTOMATION_ENABLED:
+            automation_worker = IncidentAutomationWorker(
+                _build_automation_diagnoser(memory_store)
+            )
+            automation_worker.start()
+            print(
+                "Automatic incident detection, diagnosis, remediation, and "
+                f"verification enabled; scheduled AI assessment every "
+                f"{config.RAPP_AUTOMATION_LLM_INTERVAL_S:g} seconds."
+            )
         if isinstance(memory_store, RAppMemory):
             print(
                 f"Durable memory enabled for thread "
@@ -67,21 +159,14 @@ def main() -> None:
                 f"{config.TELEMETRY_MEMORY_WINDOW_S:g} seconds."
             )
         print(f"Ask {DEFAULT_QUERY!r} or type 'exit'.\n")
-
-        while True:
-            try:
-                query = input("you> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
-            if query.lower() in {"exit", "quit"}:
-                break
-            if not query:
-                continue
-            print(f"agent> {ask(query)}\n")
+        _run_user_interface()
     finally:
-        if registered:
-            consumer.deregister_consumer_job()
+        automation_stopped = True
+        if automation_worker is not None:
+            automation_stopped = automation_worker.stop()
+            if not automation_stopped:
+                print("Automation worker is still finishing a bounded operation.")
+        _deregister_information_job(registered)
         consumer.set_snapshot_sink(None)
         writer_stopped = True
         if memory_writer is not None:
@@ -102,7 +187,7 @@ def main() -> None:
                     "Telemetry memory rollup is still finishing; leaving the "
                     "database connection open for safe process shutdown."
                 )
-        if writer_stopped and worker_stopped:
+        if writer_stopped and worker_stopped and automation_stopped:
             reset_runtime_graph()
             close_runtime_memory()
 

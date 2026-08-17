@@ -11,6 +11,9 @@ import os
 from pathlib import Path
 
 
+_RAPP_DIRECTORY = Path(__file__).resolve().parent
+
+
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 
@@ -154,9 +157,44 @@ RAPP_READ_TOOL_OAI_CONTAINERS = _env_csv(
     ),
 )
 
+# Background incident automation. The model is invoked on this fixed cadence
+# for advisory diagnosis, but deterministic health checks and policies retain
+# exclusive authority over remediation.
+RAPP_AUTOMATION_ENABLED = _env_bool("RAPP_AUTOMATION_ENABLED", True)
+RAPP_AUTOMATION_POLL_S = _env_float("RAPP_AUTOMATION_POLL_S", 5.0)
+RAPP_AUTOMATION_LLM_INTERVAL_S = _env_float(
+    "RAPP_AUTOMATION_LLM_INTERVAL_S", 60.0
+)
+RAPP_AUTOMATION_FAILURES_REQUIRED = _env_int(
+    "RAPP_AUTOMATION_FAILURES_REQUIRED", 3
+)
+RAPP_AUTOMATION_STARTUP_GRACE_S = _env_float(
+    "RAPP_AUTOMATION_STARTUP_GRACE_S", 30.0
+)
+RAPP_AUTOMATION_VERIFY_TIMEOUT_S = _env_float(
+    "RAPP_AUTOMATION_VERIFY_TIMEOUT_S", 45.0
+)
+RAPP_AUTOMATION_COOLDOWN_S = _env_float(
+    "RAPP_AUTOMATION_COOLDOWN_S", 120.0
+)
+RAPP_AUTOMATION_THREAD_ID = os.environ.get(
+    "RAPP_AUTOMATION_THREAD_ID", "health-agent-automation"
+)
+RAPP_AUTOMATION_AUDIT_DB_PATH = os.environ.get(
+    "RAPP_AUTOMATION_AUDIT_DB_PATH",
+    str(_RAPP_DIRECTORY / "data" / "rapp_memory.sqlite3"),
+)
+# Optional second-stage xApp recovery. Supported backends are disabled, docker,
+# and systemd. Targets are operator-owned and validated before any process runs.
+RAPP_AUTOMATION_XAPP_RESTART_BACKEND = os.environ.get(
+    "RAPP_AUTOMATION_XAPP_RESTART_BACKEND", "disabled"
+).strip().lower()
+RAPP_AUTOMATION_XAPP_RESTART_TARGET = os.environ.get(
+    "RAPP_AUTOMATION_XAPP_RESTART_TARGET", ""
+).strip()
+
 # Durable rApp memory. Structured telemetry samples and advisory conversation
 # context are stored locally; no terminal logs or free-form text files are used.
-_RAPP_DIRECTORY = Path(__file__).resolve().parent
 RAPP_MEMORY_ENABLED = _env_bool("RAPP_MEMORY_ENABLED", True)
 RAPP_MEMORY_DB_PATH = os.environ.get(
     "RAPP_MEMORY_DB_PATH",

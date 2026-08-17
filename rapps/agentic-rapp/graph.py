@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any, Optional, Protocol, TypedDict
 
@@ -577,12 +578,14 @@ def build_graph(
 
 
 _compiled_graph = None
+_runtime_graph_lock = threading.RLock()
 
 
 def reset_runtime_graph() -> None:
     """Drop the compiled graph when its process-wide memory store is closed."""
     global _compiled_graph
-    _compiled_graph = None
+    with _runtime_graph_lock:
+        _compiled_graph = None
 
 
 def ask_structured(
@@ -592,18 +595,27 @@ def ask_structured(
     compiled_graph=None,
 ) -> dict:
     global _compiled_graph
-    active_graph = compiled_graph
-    if active_graph is None:
+    if compiled_graph is not None:
+        result = compiled_graph.invoke(
+            {
+                "query": user_query,
+                "thread_id": normalize_thread_id(thread_id),
+            }
+        )
+        return result["answer"]
+    # The default compiled graph owns one shared read-tool registry/session.
+    # Serialize its invocations so the scheduled diagnosis and interactive CLI
+    # cannot race its initialization or concurrently mutate client state.
+    with _runtime_graph_lock:
         if _compiled_graph is None:
             _compiled_graph = build_graph(memory_store=get_runtime_memory())
-        active_graph = _compiled_graph
-    result = active_graph.invoke(
-        {
-            "query": user_query,
-            "thread_id": normalize_thread_id(thread_id),
-        }
-    )
-    return result["answer"]
+        result = _compiled_graph.invoke(
+            {
+                "query": user_query,
+                "thread_id": normalize_thread_id(thread_id),
+            }
+        )
+        return result["answer"]
 
 
 def ask(

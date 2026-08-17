@@ -3,7 +3,7 @@ Agentic AI for a live 5G/O-RAN testbed that can monitor system health, run traff
 
 The agent collects live system state from the testbed, converts the results into structured JSON, generates deterministic diagnostics, and sends the structured evidence to an LLM for a human-readable explanation.
 
-## Current Read-only rApp Data Path
+## Current Automated Health rApp Data Path
 
 The first networked MVP uses this live path:
 
@@ -11,6 +11,18 @@ The first networked MVP uses this live path:
 E2 node -> E2SM-KPM -> Health xApp -> Evidence API
         -> R1/DME Information Job -> Health Agent rApp -> LangGraph checks
 ```
+
+The rApp also runs a prompt-free background incident loop. A dedicated thread
+starts a memory-aware LangGraph/DeepSeek assessment every 60 seconds while a
+separate deterministic monitor continues checking health every five seconds.
+After three matching failures, the incident gets its own automatic diagnosis
+before a fixed policy can reconcile the R1 Information Job or optionally
+restart one configured Health xApp service. Recovery requires healthy/fresh KPM
+evidence and stream-aware sequence advancement, including the valid sequence
+reset that occurs when a new xApp source instance starts. The model selects
+bounded diagnostic evidence tools but cannot authorize or parameterize a write
+action. Incident notices, action intent/results, verification, and escalation
+are written to an append-only SQLite audit table.
 
 The Health xApp now publishes from memory over HTTP on a dedicated thread; no
 xApp evidence file is used by the Evidence API or rApp. See

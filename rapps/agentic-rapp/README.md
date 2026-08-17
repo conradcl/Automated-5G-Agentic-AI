@@ -1,4 +1,4 @@
-# Read-only Health Agent rApp MVP
+# Automated Health Agent rApp MVP
 
 The rApp subscribes to live Health xApp evidence through the lab R1/DME
 interface, performs deterministic checks for the RIC/E2 KPM telemetry
@@ -16,7 +16,68 @@ E2 node -> Health xApp -> Evidence API -> R1/DME job -> rApp -> LangGraph
 
 `app.py` is the lab R1/DME-lite broker, not the controller. `main.py`,
 `consumer.py`, `memory.py`, `read_tools.py`, `health_checks.py`, and `graph.py`
-form the read-only rApp.
+form the evidence, memory, and diagnostic LangGraph path.
+
+`automation.py` adds a separate policy-controlled background loop for automatic
+incident notice, diagnosis, remediation, and verification. Read tools and the
+LLM remain advisory and read-only; only the local deterministic controller can
+invoke the fixed remediation adapters.
+
+## Prompt-free incident automation
+
+No user question is required for monitoring or recovery. When
+`RAPP_AUTOMATION_ENABLED=true`, the rApp:
+
+1. evaluates the latest frozen telemetry every five seconds;
+2. runs the memory-aware advisory LangGraph on a separate thread every 60
+   seconds using the isolated `health-agent-automation` conversation, so model
+   or read-tool latency cannot block health polling; automation and the CLI own
+   separate compiled graph instances, so a manual question cannot pause the
+   scheduled graph;
+3. opens an incident after three consecutive identical critical failures;
+4. automatically runs an incident-specific LangGraph diagnosis before any
+   write action;
+5. applies a deterministic policy gate: delivery/freshness faults can reconcile
+   the configured R1 Information Job and xApp/KPM faults can additionally use
+   one configured xApp restart; unsupported faults such as an isolated E2-node
+   failure escalate without a blind write;
+6. verifies recovery only when deterministic health passes and telemetry either
+   advances on the same xApp source instance or arrives from a valid new source
+   instance after its expected sequence reset;
+7. records a durable action intent before execution, followed by the bounded
+   result, verification, failure, or escalation in the `automation_events`
+   SQLite table; audit failure therefore prevents a write action; and
+8. runs as the existing interactive CLI on a TTY or remains alive as a headless
+   service when stdin is closed, until SIGTERM or Ctrl-C.
+
+The default second-stage restart backend is `disabled`. To enable it, configure
+exactly one operator-owned target, for example:
+
+```bash
+export RAPP_AUTOMATION_XAPP_RESTART_BACKEND=docker
+export RAPP_AUTOMATION_XAPP_RESTART_TARGET=health-xapp
+```
+
+Supported backends are `docker` and `systemd`. They use fixed absolute
+executables, `shell=False`, a validated literal target, a bounded timeout, one
+second-stage attempt, and a cooldown. DeepSeek never receives a write-tool
+catalog and cannot provide a command or target. Docker daemon access remains
+host-privileged and should only be granted where this recovery policy is
+acceptable.
+
+DeepSeek does make agentic diagnostic decisions: within LangGraph it decides
+whether more evidence is needed, selects one bounded read tool at a time, sees
+validated results and durable local context, and decides when it can answer.
+The resulting diagnosis gates incident handling, but production-safe write
+authorization remains deterministic. One scheduled graph assessment is not
+necessarily one provider HTTP request: bounded tool selection can require
+multiple model turns, and telemetry-window digest generation is a separate
+memory workflow.
+
+Every scheduled assessment is printed, including a healthy result. Manual CLI
+questions do not reset or suppress the automation cadence; both graph instances
+share the thread-safe telemetry store while retaining separate conversation
+threads.
 
 ## Install
 
