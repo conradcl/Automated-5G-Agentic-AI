@@ -48,6 +48,56 @@ def test_tty_keeps_existing_interactive_exit_behavior(monkeypatch):
     assert prompts == ["you> "]
 
 
+def test_tty_prints_compact_completed_read_tool_status(monkeypatch, capsys):
+    queries = iter(["Check the DME job", "exit"])
+    monkeypatch.setattr(rapp_main.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(queries))
+    monkeypatch.setattr(
+        rapp_main,
+        "ask_structured",
+        lambda _query: {
+            "display": "The monitoring path is healthy.",
+            "read_tools": {
+                "calls_made": 1,
+                "tools_used": ["get_dme_job_status"],
+                "tool_runs": [
+                    {
+                        "tool_name": "get_dme_job_status",
+                        "status": "completed",
+                        "result_ok": True,
+                        "elapsed_seconds": 0.36,
+                    }
+                ],
+            },
+        },
+    )
+
+    rapp_main._run_user_interface()
+
+    assert capsys.readouterr().out == (
+        "[TOOLS] get_dme_job_status completed in 0.4s.\n"
+        "agent> The monitoring path is healthy.\n\n"
+    )
+
+
+def test_tty_omits_tool_status_when_no_tool_completed(monkeypatch, capsys):
+    queries = iter(["Use current evidence", "exit"])
+    monkeypatch.setattr(rapp_main.sys, "stdin", FakeStdin(True))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(queries))
+    monkeypatch.setattr(
+        rapp_main,
+        "ask_structured",
+        lambda _query: {
+            "display": "Current evidence was enough.",
+            "read_tools": {"calls_made": 0, "tools_used": []},
+        },
+    )
+
+    rapp_main._run_user_interface()
+
+    assert capsys.readouterr().out == "agent> Current evidence was enough.\n\n"
+
+
 def test_automation_uses_a_dedicated_compiled_graph(monkeypatch):
     memory_store = object()
     compiled_graph = object()

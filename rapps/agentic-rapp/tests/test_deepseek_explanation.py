@@ -135,6 +135,10 @@ def test_request_is_structured_evidence_without_a_verdict() -> None:
     assert "Never append a percent" in system_prompt
     assert "without an explicit supplied threshold" in system_prompt
     assert "evidence.calculated_timing_ms" in system_prompt
+    compact_prompt = " ".join(system_prompt.split())
+    assert "Normally use 3-7 short sentences or bullets" in compact_prompt
+    assert "no more than 250 words" in compact_prompt
+    assert "up to 350 words" in compact_prompt
     assert "test-secret" not in json.dumps(request_body)
 
 

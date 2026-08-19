@@ -539,6 +539,48 @@ def test_deepseek_selects_only_one_fixed_empty_argument_tool() -> None:
     assert captured["json"]["tool_choice"] == "auto"
 
 
+def test_deepseek_is_told_supplied_results_are_completed_tool_runs() -> None:
+    captured: dict[str, Any] = {}
+
+    def post(_url: str, **kwargs: Any) -> PlannerResponse:
+        captured.update(kwargs)
+        return PlannerResponse(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": (
+                                f"Tools checked: {GET_DME_JOB_STATUS}. "
+                                "The configured endpoint could not be reached."
+                            )
+                        },
+                    }
+                ]
+            }
+        )
+
+    result = _failed_dme_result()
+    decision = DeepSeekExplainer(api_key="test-key", http_post=post).decide_read_tool(
+        "Is the R1 job registered?",
+        _evidence(),
+        None,
+        [result],
+        [],
+    )
+
+    assert decision["decision"] == "answer"
+    request = captured["json"]
+    prompt = request["messages"][0]["content"]
+    payload = json.loads(request["messages"][1]["content"])
+    compact_prompt = " ".join(prompt.split())
+    assert payload["read_tool_results"] == [result]
+    assert "is an execution receipt" in prompt
+    assert "acknowledge the tools" in prompt
+    assert "Never say that you cannot run or access tools" in compact_prompt
+    assert "tools" not in request
+
+
 def test_deepseek_rejects_model_supplied_tool_arguments() -> None:
     def post(_url: str, **_kwargs: Any) -> PlannerResponse:
         return PlannerResponse(
@@ -595,12 +637,240 @@ def _failed_result(tool_name: str) -> dict[str, Any]:
         GET_DME_JOB_STATUS: "r1_control_plane",
         GET_EVIDENCE_PIPELINE_STATUS: "evidence_pipeline",
         GET_EVIDENCE_HISTORY: "evidence_history",
+        PING_UE_PATH: "ue_user_plane",
+        GET_OAI_CONTAINER_STATUS: "oai_core_runtime",
     }
     result = _failed_dme_result()
     result["tool_name"] = tool_name
     result["scope"] = scopes[tool_name]
     result["limitations"] = ["Collection failed without changing the testbed."]
     return result
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        (
+            (
+                "Use ping_ue_path and get_oai_container_status to check UE "
+                "uplink reachability and the allowlisted OAI containers."
+            ),
+            [PING_UE_PATH, GET_OAI_CONTAINER_STATUS],
+        ),
+        (
+            "Please run get_oai_container_status; then call ping_ue_path.",
+            [GET_OAI_CONTAINER_STATUS, PING_UE_PATH],
+        ),
+        ("What does ping_ue_path report?", []),
+        ("Do not use ping_ue_path.", []),
+        (
+            "Use ping_ue_path, but do not use get_oai_container_status.",
+            [PING_UE_PATH],
+        ),
+        (
+            "Use ping_ue_path, not get_oai_container_status.",
+            [PING_UE_PATH],
+        ),
+        (
+            "Use pre_ping_ue_path and get_oai_container_status_backup.",
+            [],
+        ),
+    ],
+)
+def test_explicit_read_tool_requests_require_exact_positive_directives(
+    question: str,
+    expected: list[str],
+) -> None:
+    assert graph._explicit_read_tool_requests(question) == expected
+
+
+def test_exact_two_tool_demo_prompt_executes_both_before_planner_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: list[str] = []
+    planner_results: list[list[str]] = []
+
+    class Explainer:
+        def decide_read_tool(
+            self,
+            _question: str,
+            _evidence: dict[str, Any],
+            _memory: Any,
+            results: list[dict[str, Any]],
+            _catalog: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            planner_results.append([result["tool_name"] for result in results])
+            return {
+                "decision": "answer",
+                "answer": "Both requested observations were collected.",
+            }
+
+        def explain(self, _question: str, _evidence: dict[str, Any]) -> str:
+            raise AssertionError("the read-tool planner should answer")
+
+    class Registry:
+        def catalog(self) -> list[dict[str, Any]]:
+            return [
+                tool
+                for tool in read_tool_catalog()
+                if tool["name"] in {PING_UE_PATH, GET_OAI_CONTAINER_STATUS}
+            ]
+
+        def execute(self, tool_name: str) -> dict[str, Any]:
+            selected.append(tool_name)
+            return _failed_result(tool_name)
+
+    monkeypatch.setattr(graph, "get_health_snapshot", lambda: _snapshot(7, BASE))
+    answer = graph.ask_structured(
+        (
+            "Use ping_ue_path and get_oai_container_status to check UE uplink "
+            "reachability and the allowlisted OAI containers. Give me packet "
+            "loss, average RTT, and list only containers that are not running."
+        ),
+        compiled_graph=graph.build_graph(
+            explainer=Explainer(),
+            read_tool_registry=Registry(),
+        ),
+    )
+
+    assert selected == [PING_UE_PATH, GET_OAI_CONTAINER_STATUS]
+    assert planner_results == [[PING_UE_PATH, GET_OAI_CONTAINER_STATUS]]
+    assert answer["explanation"] == "Both requested observations were collected."
+    assert answer["read_tools"]["calls_made"] == 2
+    assert answer["read_tools"]["tools_used"] == selected
+    assert answer["read_tools"]["stop_reason"] == "model_answer"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What does ping_ue_path report?",
+        "Do not use ping_ue_path.",
+        "Use pre_ping_ue_path and get_oai_container_status_backup.",
+    ],
+)
+def test_non_directive_or_inexact_tool_mentions_do_not_bypass_the_planner(
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+) -> None:
+    planner_calls = 0
+
+    class Explainer:
+        def decide_read_tool(
+            self,
+            _question: str,
+            _evidence: dict[str, Any],
+            _memory: Any,
+            results: list[dict[str, Any]],
+            _catalog: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            nonlocal planner_calls
+            planner_calls += 1
+            assert results == []
+            return {"decision": "answer", "answer": "No read was requested."}
+
+        def explain(self, _question: str, _evidence: dict[str, Any]) -> str:
+            raise AssertionError("the read-tool planner should answer")
+
+    class Registry:
+        def catalog(self) -> list[dict[str, Any]]:
+            return read_tool_catalog()
+
+        def execute(self, _tool_name: str) -> dict[str, Any]:
+            raise AssertionError("a non-directive mention must not execute a tool")
+
+    monkeypatch.setattr(graph, "get_health_snapshot", lambda: _snapshot(7, BASE))
+    answer = graph.ask_structured(
+        question,
+        compiled_graph=graph.build_graph(
+            explainer=Explainer(),
+            read_tool_registry=Registry(),
+        ),
+    )
+
+    assert planner_calls == 1
+    assert answer["read_tools"]["calls_made"] == 0
+    assert answer["read_tools"]["tools_used"] == []
+    assert answer["read_tools"]["stop_reason"] == "model_answer"
+
+
+def test_explicit_tool_planning_skips_an_already_used_requested_tool() -> None:
+    class Explainer:
+        def decide_read_tool(self, *_args: Any) -> dict[str, Any]:
+            raise AssertionError("the remaining explicit tool should execute first")
+
+    class Registry:
+        def catalog(self) -> list[dict[str, Any]]:
+            return [
+                tool
+                for tool in read_tool_catalog()
+                if tool["name"] in {PING_UE_PATH, GET_OAI_CONTAINER_STATUS}
+            ]
+
+    node = graph.make_plan_read_tools_node(
+        Explainer(),
+        Registry(),
+        max_calls=4,
+    )
+    update = node(
+        {
+            "query": "Use ping_ue_path and get_oai_container_status.",
+            "evidence": _evidence(),
+            "read_tool_results": [_failed_result(PING_UE_PATH)],
+            "read_tool_calls_made": 1,
+        }
+    )
+
+    assert update["read_tool_route"] == "execute"
+    assert update["read_tool_request"] == GET_OAI_CONTAINER_STATUS
+
+
+def test_explicit_tool_requests_remain_bounded_by_max_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: list[str] = []
+
+    class Explainer:
+        def decide_read_tool(
+            self,
+            _question: str,
+            _evidence: dict[str, Any],
+            _memory: Any,
+            results: list[dict[str, Any]],
+            catalog: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            assert [result["tool_name"] for result in results] == [PING_UE_PATH]
+            assert catalog == []
+            return {"decision": "answer", "answer": "The bounded read is complete."}
+
+        def explain(self, _question: str, _evidence: dict[str, Any]) -> str:
+            raise AssertionError("the read-tool planner should answer")
+
+    class Registry:
+        def catalog(self) -> list[dict[str, Any]]:
+            return [
+                tool
+                for tool in read_tool_catalog()
+                if tool["name"] in {PING_UE_PATH, GET_OAI_CONTAINER_STATUS}
+            ]
+
+        def execute(self, tool_name: str) -> dict[str, Any]:
+            selected.append(tool_name)
+            return _failed_result(tool_name)
+
+    monkeypatch.setattr(config, "RAPP_READ_TOOL_MAX_CALLS", 1)
+    monkeypatch.setattr(graph, "get_health_snapshot", lambda: _snapshot(7, BASE))
+    answer = graph.ask_structured(
+        "Use ping_ue_path and get_oai_container_status.",
+        compiled_graph=graph.build_graph(
+            explainer=Explainer(),
+            read_tool_registry=Registry(),
+        ),
+    )
+
+    assert selected == [PING_UE_PATH]
+    assert answer["read_tools"]["calls_made"] == 1
+    assert answer["read_tools"]["stop_reason"] == "max_calls"
 
 
 def test_graph_runs_model_selected_tool_then_evaluates_the_frozen_snapshot(
@@ -679,6 +949,60 @@ def test_graph_runs_model_selected_tool_then_evaluates_the_frozen_snapshot(
     assert answer["read_tools"]["calls_made"] == 1
     assert answer["read_tools"]["tools_used"] == [GET_DME_JOB_STATUS]
     assert answer["read_tools"]["stop_reason"] == "model_answer"
+    assert answer["read_tools"]["tool_runs"] == [
+        {
+            "tool_name": GET_DME_JOB_STATUS,
+            "status": "completed",
+            "result_ok": False,
+            "elapsed_seconds": answer["read_tools"]["elapsed_seconds"],
+        }
+    ]
+    assert answer["read_tools"]["elapsed_seconds"] >= 0
+
+
+@pytest.mark.parametrize(
+    ("registry_result", "expected_status", "expected_result_ok"),
+    [
+        (_failed_dme_result(), "completed", False),
+        (RuntimeError("collector failed"), "failed", None),
+        ({"unexpected": "shape"}, "rejected", None),
+    ],
+)
+def test_read_tool_execution_receipt_captures_outcome_and_elapsed_time(
+    registry_result: Any,
+    expected_status: str,
+    expected_result_ok: bool | None,
+) -> None:
+    class Registry:
+        def execute(self, tool_name: str) -> dict[str, Any]:
+            assert tool_name == GET_DME_JOB_STATUS
+            if isinstance(registry_result, Exception):
+                raise registry_result
+            return registry_result
+
+    clock_values = iter((10.0, 10.126))
+    node = graph.make_execute_read_tool_node(
+        Registry(),
+        monotonic=lambda: next(clock_values),
+    )
+
+    update = node(
+        {
+            "read_tool_request": GET_DME_JOB_STATUS,
+            "read_tool_results": [],
+            "read_tool_calls_made": 0,
+        }
+    )
+
+    assert update["read_tool_calls_made"] == 1
+    assert update["read_tool_runs"] == [
+        {
+            "tool_name": GET_DME_JOB_STATUS,
+            "status": expected_status,
+            "result_ok": expected_result_ok,
+            "elapsed_seconds": 0.126,
+        }
+    ]
 
 
 def test_graph_catalog_failure_falls_back_without_crashing(
@@ -756,6 +1080,18 @@ def test_graph_enforces_distinct_tool_and_total_call_limits(
     assert len(set(selected)) == 2
     assert answer["read_tools"]["calls_made"] == 2
     assert answer["read_tools"]["stop_reason"] == "max_calls"
+    assert [run["tool_name"] for run in answer["read_tools"]["tool_runs"]] == selected
+    assert all(
+        run["status"] == "completed"
+        for run in answer["read_tools"]["tool_runs"]
+    )
+    assert answer["read_tools"]["elapsed_seconds"] == round(
+        sum(
+            run["elapsed_seconds"]
+            for run in answer["read_tools"]["tool_runs"]
+        ),
+        3,
+    )
 
 
 def test_legacy_explainer_response_shape_remains_unchanged(

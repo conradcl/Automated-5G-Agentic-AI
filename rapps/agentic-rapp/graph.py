@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import threading
+import time
 from datetime import datetime, timezone
-from typing import Any, Optional, Protocol, TypedDict
+from typing import Any, Callable, Optional, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -37,6 +39,51 @@ from read_tools import (
 
 logger = logging.getLogger(__name__)
 DEFAULT_QUERY = f"Is the {config.ASSESSMENT_SCOPE_LABEL} healthy?"
+
+_EXPLICIT_READ_TOOL_DIRECTIVE = re.compile(
+    r"^\s*(?:(?:please|then)\s+)*(?:use|run|call|execute|invoke)\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_READ_TOOL_TRANSITION = re.compile(
+    r"(?:\b(?:but\s+)?(?:(?:do\s+not|don't|never)\s+"
+    r"(?:use|run|call|execute|invoke)\b|avoid\b)|,\s*not\b)",
+    re.IGNORECASE,
+)
+_READ_TOOL_CLAUSE_BOUNDARY = re.compile(r"[.!?;\n]+")
+
+
+def _explicit_read_tool_requests(query: Any) -> list[str]:
+    """Return fixed tool names from unambiguous positive user directives.
+
+    Merely mentioning a tool must not execute it. Only imperative clauses such
+    as ``use ping_ue_path`` qualify; negative or explanatory mentions do not.
+    """
+    if not isinstance(query, str):
+        return []
+    requested_with_positions: list[tuple[int, str]] = []
+    clause_offset = 0
+    for clause in _READ_TOOL_CLAUSE_BOUNDARY.split(query):
+        if _EXPLICIT_READ_TOOL_DIRECTIVE.match(clause):
+            negative_transition = _NEGATIVE_READ_TOOL_TRANSITION.search(clause)
+            positive_clause = (
+                clause[: negative_transition.start()]
+                if negative_transition is not None
+                else clause
+            )
+            for tool_name in READ_TOOL_NAMES:
+                match = re.search(
+                    rf"(?<![A-Za-z0-9_]){re.escape(tool_name)}"
+                    rf"(?![A-Za-z0-9_])",
+                    positive_clause,
+                    re.IGNORECASE,
+                )
+                if match is not None:
+                    requested_with_positions.append(
+                        (clause_offset + match.start(), tool_name)
+                    )
+        clause_offset += len(clause) + 1
+    requested_with_positions.sort()
+    return list(dict.fromkeys(name for _, name in requested_with_positions))
 
 
 class EvidenceExplainer(Protocol):
@@ -65,6 +112,7 @@ class AgentState(TypedDict, total=False):
     read_tool_stop_reason: Optional[str]
     read_tool_planning_error: Optional[str]
     read_tool_execution_error: Optional[str]
+    read_tool_runs: list[dict[str, Any]]
     read_tool_route: str
     explanation: Optional[str]
     explanation_source: str
@@ -226,6 +274,18 @@ def make_plan_read_tools_node(
                     for tool in full_catalog
                     if tool["name"] not in used_names
                 ]
+            available_names = {tool["name"] for tool in catalog}
+            for explicitly_requested in _explicit_read_tool_requests(
+                state.get("query", DEFAULT_QUERY)
+            ):
+                if explicitly_requested in available_names:
+                    return {
+                        "read_tools_enabled": True,
+                        "read_tool_request": explicitly_requested,
+                        "read_tool_stop_reason": None,
+                        "read_tool_planning_error": None,
+                        "read_tool_route": "execute",
+                    }
             try:
                 decision = decide(
                     state.get("query", DEFAULT_QUERY),
@@ -273,11 +333,6 @@ def make_plan_read_tools_node(
                 "tool_name",
             }:
                 requested = decision.get("tool_name")
-                available_names = {
-                    tool.get("name")
-                    for tool in catalog
-                    if isinstance(tool, dict)
-                }
                 if requested not in available_names or requested in used_names:
                     raise ExplanationUnavailable(
                         "read-tool planner requested an unavailable tool"
@@ -315,16 +370,42 @@ def make_plan_read_tools_node(
     return plan_read_tools
 
 
-def make_execute_read_tool_node(read_tool_runner: ReadToolRunner):
+def make_execute_read_tool_node(
+    read_tool_runner: ReadToolRunner,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+):
     def execute_read_tool(state: AgentState) -> dict:
         requested = state.get("read_tool_request")
         results = list(state.get("read_tool_results", []))
+        tool_runs = copy.deepcopy(state.get("read_tool_runs", []))
         calls_made = state.get("read_tool_calls_made", len(results))
+        started_at = monotonic()
+
+        def record_run(
+            status: str,
+            *,
+            result_ok: Optional[bool] = None,
+        ) -> list[dict[str, Any]]:
+            tool_runs.append(
+                {
+                    "tool_name": requested if isinstance(requested, str) else None,
+                    "status": status,
+                    "result_ok": result_ok,
+                    "elapsed_seconds": round(
+                        max(0.0, monotonic() - started_at),
+                        3,
+                    ),
+                }
+            )
+            return tool_runs
+
         if requested not in READ_TOOL_NAMES:
             return {
                 "read_tool_request": None,
                 "read_tool_calls_made": calls_made + 1,
                 "read_tool_execution_error": "read-tool request was not allowlisted",
+                "read_tool_runs": record_run("rejected"),
             }
         try:
             result = read_tool_runner.execute(requested)
@@ -334,6 +415,7 @@ def make_execute_read_tool_node(read_tool_runner: ReadToolRunner):
                 "read_tool_request": None,
                 "read_tool_calls_made": calls_made + 1,
                 "read_tool_execution_error": "read-tool runner failed safely",
+                "read_tool_runs": record_run("failed"),
             }
         result_errors = validate_read_tool_result(result)
         if result_errors:
@@ -343,6 +425,7 @@ def make_execute_read_tool_node(read_tool_runner: ReadToolRunner):
                 "read_tool_execution_error": (
                     f"read-tool result was rejected: {result_errors[0]}"
                 )[:300],
+                "read_tool_runs": record_run("rejected"),
             }
         results.append(copy.deepcopy(result))
         return {
@@ -350,6 +433,10 @@ def make_execute_read_tool_node(read_tool_runner: ReadToolRunner):
             "read_tool_request": None,
             "read_tool_calls_made": calls_made + 1,
             "read_tool_execution_error": None,
+            "read_tool_runs": record_run(
+                "completed",
+                result_ok=result.get("ok"),
+            ),
         }
 
     return execute_read_tool
@@ -455,6 +542,7 @@ def build_structured_answer(state: AgentState) -> dict:
             "load_error": state.get("memory_error"),
         }
     if state.get("read_tools_enabled") is True:
+        tool_runs = copy.deepcopy(state.get("read_tool_runs", []))
         answer["read_tools"] = {
             "enabled": state.get("read_tools_enabled", False),
             "calls_made": state.get("read_tool_calls_made", 0),
@@ -465,6 +553,20 @@ def build_structured_answer(state: AgentState) -> dict:
             ],
             "stop_reason": state.get("read_tool_stop_reason"),
             "planning_error": state.get("read_tool_planning_error"),
+            "tool_runs": tool_runs,
+            "elapsed_seconds": round(
+                sum(
+                    (
+                        run.get("elapsed_seconds", 0.0)
+                        for run in tool_runs
+                        if isinstance(run, dict)
+                        and isinstance(run.get("elapsed_seconds"), (int, float))
+                        and not isinstance(run.get("elapsed_seconds"), bool)
+                    ),
+                    0.0,
+                ),
+                3,
+            ),
             "results": copy.deepcopy(state.get("read_tool_results", [])),
         }
     return {"answer": answer}

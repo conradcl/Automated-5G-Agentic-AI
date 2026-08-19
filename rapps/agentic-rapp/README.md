@@ -112,11 +112,14 @@ For least privilege, do not expose that key to the DME process. The default
 model is `deepseek-v4-flash`. If the key is absent or the API is unavailable,
 the rApp continues with a local deterministic prose fallback.
 The default `DEEPSEEK_TEMPERATURE=0.1` reduces response variation.
-Normal explanations allow 1,200 output tokens and hidden minute summaries allow
-800 by default. If DeepSeek reports `finish_reason=length`, the client retries
-once with a bounded larger output budget and a stricter brevity instruction.
-This retry changes only response length handling; the verdict-free evidence
-boundary and deterministic health authority remain unchanged.
+Visible explanations normally use three to seven short sentences or bullets and
+stay within 250 words; an explicitly detailed request may use up to 350 words.
+The 1,200-token setting is a completion safety ceiling, not a target. Hidden
+minute summaries allow 800 tokens by default. If DeepSeek reports
+`finish_reason=length`, the client retries once with a bounded larger output
+budget and a stricter brevity instruction. This retry changes only response
+length handling; the verdict-free evidence boundary and deterministic health
+authority remain unchanged.
 
 ```bash
 export DEEPSEEK_API_KEY=your_key_here
@@ -246,7 +249,11 @@ ignore environment proxy variables. Process collectors use fixed absolute
 executables with `shell=False`; no model-provided shell, SQL, HTTP, SSH, Docker,
 interface, destination, or container argument is accepted. A tool name is used
 at most once per question, and the complete loop is capped by
-`RAPP_READ_TOOL_MAX_CALLS`.
+`RAPP_READ_TOOL_MAX_CALLS`. An explicit positive instruction such as
+`Use ping_ue_path and get_oai_container_status` deterministically queues those
+allowlisted reads in the named order; mere mentions and negative instructions
+do not execute tools. Semantic requests without exact names remain
+model-selected.
 
 These observations have deliberately narrow meanings:
 
@@ -257,10 +264,15 @@ These observations have deliberately narrow meanings:
 - Container runtime/health state does not prove that the application or 5G service is correct.
 
 `ask_structured(...)` exposes execution metadata under `answer["read_tools"]`,
-including tools used, bounded results, stop reason, and any planning error.
-Existing `ask(...)` behavior and the deterministic health report remain intact.
-If DeepSeek, a collector, or result validation fails, the graph safely uses the
-existing explanation/fallback path.
+including tools used, per-tool outcome and elapsed time, total tool time,
+bounded results, stop reason, and any planning error. The interactive CLI emits
+one compact receipt before the answer, for example
+`[TOOLS] get_dme_job_status completed in 0.4s.` The follow-up DeepSeek request
+is explicitly told that supplied results came from completed rApp tool calls,
+so it uses those results instead of disclaiming tool access. Existing `ask(...)`
+behavior and the deterministic health report remain intact. If DeepSeek, a
+collector, or result validation fails, the graph safely uses the existing
+explanation/fallback path.
 
 ## DeepSeek evidence boundary
 

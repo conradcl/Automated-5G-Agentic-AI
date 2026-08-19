@@ -1,6 +1,7 @@
 """Interactive or headless entry point for the automated Health Agent rApp."""
 from __future__ import annotations
 
+import math
 import signal
 import sys
 import threading
@@ -12,7 +13,6 @@ from automation import IncidentAutomationWorker
 from deepseek_client import DeepSeekExplainer
 from graph import (
     DEFAULT_QUERY,
-    ask,
     ask_structured,
     build_graph,
     reset_runtime_graph,
@@ -75,6 +75,52 @@ def _wait_for_headless_shutdown(
         signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
+def _read_tool_status(answer: dict) -> str | None:
+    """Format one compact operator-visible line for completed read tools."""
+    read_tools = answer.get("read_tools")
+    if not isinstance(read_tools, dict):
+        return None
+    tool_runs = read_tools.get("tool_runs")
+    if isinstance(tool_runs, list):
+        summaries = []
+        for run in tool_runs:
+            if not isinstance(run, dict):
+                continue
+            tool_name = run.get("tool_name")
+            status = run.get("status")
+            elapsed_seconds = run.get("elapsed_seconds")
+            if not isinstance(tool_name, str) or not tool_name:
+                tool_name = "read tool"
+            if status not in {"completed", "failed", "rejected"}:
+                continue
+            if (
+                isinstance(elapsed_seconds, (int, float))
+                and not isinstance(elapsed_seconds, bool)
+                and math.isfinite(elapsed_seconds)
+                and elapsed_seconds >= 0
+            ):
+                summaries.append(
+                    f"{tool_name} {status} in {elapsed_seconds:.1f}s"
+                )
+            else:
+                summaries.append(f"{tool_name} {status}")
+        if summaries:
+            return f"[TOOLS] {'; '.join(summaries)}."
+
+    # Preserve useful output for callers returning the pre-timing shape.
+    tools_used = read_tools.get("tools_used")
+    if not isinstance(tools_used, list):
+        return None
+    tool_names = [
+        tool_name
+        for tool_name in tools_used
+        if isinstance(tool_name, str) and tool_name
+    ]
+    if not tool_names:
+        return None
+    return f"[TOOLS] Ran: {', '.join(tool_names)}."
+
+
 def _run_user_interface() -> None:
     """Run the existing CLI on a TTY, otherwise host the headless service."""
     if not sys.stdin.isatty():
@@ -91,7 +137,11 @@ def _run_user_interface() -> None:
             break
         if not query:
             continue
-        print(f"agent> {ask(query)}\n")
+        answer = ask_structured(query)
+        tool_status = _read_tool_status(answer)
+        if tool_status is not None:
+            print(tool_status)
+        print(f"agent> {answer['display']}\n")
 
 
 def _build_automation_diagnoser(memory_store):
